@@ -14,6 +14,7 @@ import { portfolioRouter } from "./routes/portfolio.js";
 import { settingsRouter } from "./routes/settings.js";
 import { adminRouter } from "./routes/admin.js";
 import { adminResourcesRouter } from "./routes/admin-resources.js";
+import { adminConsoleRouter } from "./routes/admin-console.js";
 import { giftsRouter } from "./routes/gifts.js";
 import { chatRouter } from "./routes/chat.js";
 import { webhooksRouter } from "./routes/webhooks.js";
@@ -84,6 +85,7 @@ export function createApp() {
   app.use("/v1/gifts", giftsRouter);
   app.use("/v1/admin", adminRouter);
   app.use("/v1/admin", adminResourcesRouter);
+  app.use("/v1/admin", adminConsoleRouter);
 
   app.post(
     "/v1/admin/jobs/maturity/run",
