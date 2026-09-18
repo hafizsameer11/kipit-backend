@@ -1,0 +1,36 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    container_name: kipit-postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: kipit
+      POSTGRES_PASSWORD: kipit
+      POSTGRES_DB: kipit
+    ports:
+      - "5432:5432"
+    volumes:
+      - kipit_pg_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U kipit -d kipit"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+
+  redis:
+    image: redis:7-alpine
+    container_name: kipit-redis
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - kipit_redis_data:/data
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 3s
+      retries: 10
+
+volumes:
+  kipit_pg_data:
+  kipit_redis_data:
