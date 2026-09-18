@@ -12,9 +12,11 @@ import {
 } from "../lib/crypto.js";
 import { ensureUserWallet } from "./ledger.js";
 import { writeAudit } from "./audit.js";
+import { sendOtpEmail } from "./email.js";
 
 function otpCode() {
-  if (env.NODE_ENV === "development") return env.DEMO_OTP;
+  // Fixed demo OTP only when SMTP is not configured (local/dev convenience).
+  if (env.NODE_ENV === "development" && !env.SMTP_HOST) return env.DEMO_OTP;
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
@@ -26,10 +28,11 @@ export async function requestOtp(input: {
   const code = otpCode();
   const codeHash = await hashSecret(code);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
+  const target = input.target.toLowerCase();
 
   await prisma.otpChallenge.create({
     data: {
-      target: input.target.toLowerCase(),
+      target,
       purpose: input.purpose,
       userId: input.userId,
       codeHash,
@@ -37,9 +40,20 @@ export async function requestOtp(input: {
     },
   });
 
+  // Email targets only — phone OTP can be added later via SMS.
+  if (target.includes("@")) {
+    try {
+      await sendOtpEmail({ to: target, code, purpose: input.purpose });
+    } catch (err) {
+      console.error("[email] failed to send OTP:", err);
+      // Still return success so attackers cannot probe mail delivery; code remains valid in DB.
+    }
+  }
+
   return {
     expiresAt,
-    ...(env.NODE_ENV === "development" ? { debugCode: code } : {}),
+    sent: true,
+    ...(env.NODE_ENV === "development" && !env.SMTP_HOST ? { debugCode: code } : {}),
   };
 }
 
