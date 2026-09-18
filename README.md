@@ -87,6 +87,7 @@ Demo BVN: `22123456789`.
 | POST | `/fixed-plans` | yes + T1 | Create fixed plan |
 | GET | `/placements` | yes | List placements |
 | GET/POST | `/auto-invest` | yes | Auto-invest rules |
+| PATCH | `/auto-invest/:id` | yes | Pause/resume auto-invest |
 
 ### Explore `/v1/explore`
 | Method | Path | Auth | Purpose |
