@@ -15,7 +15,22 @@ npm run dev
 
 API: `http://localhost:4000` · Worker: `npm run worker`
 
-Dev OTP is always `123456`. Demo BVN: `22123456789`.
+### Email (Hostinger SMTP)
+Set in `.env` (see `.env.example`):
+
+```env
+EMAIL_PROVIDER=smtp
+EMAIL_FROM="Kipit <noreply@kipit.pejul.com>"
+SMTP_HOST=smtp.hostinger.com
+SMTP_PORT=465
+SMTP_SECURE=true
+SMTP_USER=noreply@kipit.pejul.com
+SMTP_PASS=your-mailbox-password
+```
+
+Signup / password-reset OTPs are emailed when SMTP is configured. Without `SMTP_HOST`, local dev still uses OTP `123456`. Resend can be enabled later with `EMAIL_PROVIDER=resend` + `RESEND_API_KEY`.
+
+Demo BVN: `22123456789`.
 
 ### Seeded accounts
 

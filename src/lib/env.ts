@@ -12,6 +12,21 @@ const envSchema = z.object({
   JWT_REFRESH_TTL: z.string().default("30d"),
   DEMO_OTP: z.string().default("123456"),
 
+  /** smtp (Hostinger) now; set resend later when activating Resend */
+  EMAIL_PROVIDER: z.enum(["smtp", "resend", "console"]).default("smtp"),
+  EMAIL_FROM: z.string().optional().default(""),
+  /** Hostinger typically: smtp.hostinger.com, port 465 (SSL) or 587 (STARTTLS) */
+  SMTP_HOST: z.string().optional().default(""),
+  SMTP_PORT: z.coerce.number().default(465),
+  SMTP_SECURE: z
+    .enum(["true", "false"])
+    .default("true")
+    .transform((v) => v === "true"),
+  SMTP_USER: z.string().optional().default(""),
+  SMTP_PASS: z.string().optional().default(""),
+  /** Reserved for later */
+  RESEND_API_KEY: z.string().optional().default(""),
+
   /** sandbox = use provider sandbox URLs; live = production URLs */
   PAYMENTS_MODE: z.enum(["sandbox", "live"]).default("sandbox"),
   /**
