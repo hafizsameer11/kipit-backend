@@ -102,6 +102,8 @@ export async function registerUser(input: {
   middleName?: string;
   surname: string;
   referralCode?: string;
+  biometricsLogin?: boolean;
+  biometricsTxn?: boolean;
   ipAddress?: string;
   userAgent?: string;
 }) {
@@ -119,6 +121,8 @@ export async function registerUser(input: {
       surname: input.surname.trim(),
       referralCode: makeReferralCode(input.firstName),
       referredBy: input.referralCode?.trim() || null,
+      biometricsLogin: input.biometricsLogin ?? false,
+      biometricsTxn: input.biometricsTxn ?? false,
       consents: {
         create: [
           { docKey: "terms", version: "1.0" },
