@@ -260,6 +260,41 @@ export async function revokeSession(sessionId: string, userId: string) {
   });
 }
 
+export async function resetPasswordWithOtp(input: {
+  target: string;
+  code: string;
+  password: string;
+}) {
+  if (input.password.length < 8) {
+    throw new AppError(400, "Password must be at least 8 characters", "WEAK_PASSWORD");
+  }
+  await verifyOtp({
+    target: input.target,
+    purpose: "PASSWORD_RESET",
+    code: input.code,
+  });
+  const email = input.target.toLowerCase().trim();
+  const user = await prisma.user.findUnique({ where: { email } });
+  if (!user) throw new AppError(404, "Account not found", "USER_NOT_FOUND");
+
+  const passwordHash = await hashSecret(input.password);
+  await prisma.user.update({
+    where: { id: user.id },
+    data: { passwordHash, failedLoginCount: 0, lockedUntil: null },
+  });
+  await prisma.session.updateMany({
+    where: { userId: user.id, revokedAt: null },
+    data: { revokedAt: new Date() },
+  });
+  await writeAudit({
+    actorUserId: user.id,
+    action: "user.password_reset",
+    entityType: "User",
+    entityId: user.id,
+  });
+  return { ok: true as const };
+}
+
 export function publicUser(user: {
   id: string;
   email: string | null;

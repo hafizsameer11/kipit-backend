@@ -9,6 +9,7 @@ import {
   publicUser,
   registerUser,
   requestOtp,
+  resetPasswordWithOtp,
   revokeSession,
   setTransactionPin,
   verifyOtp,
@@ -107,6 +108,22 @@ authRouter.post(
     });
 
     res.json({ data: session });
+  }),
+);
+
+authRouter.post(
+  "/password/reset",
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        target: z.string().min(3),
+        code: z.string().min(4).max(8),
+        password: z.string().min(8),
+      })
+      .parse(req.body);
+
+    await resetPasswordWithOtp(body);
+    res.json({ data: { ok: true } });
   }),
 );
 
