@@ -1,0 +1,589 @@
+generator client {
+  provider = "prisma-client-js"
+}
+
+datasource db {
+  provider = "postgresql"
+  url      = env("DATABASE_URL")
+}
+
+enum KycTier {
+  TIER_0
+  TIER_1
+  TIER_2
+}
+
+enum KycCaseStatus {
+  NOT_STARTED
+  IN_PROGRESS
+  PENDING_REVIEW
+  APPROVED
+  REJECTED
+}
+
+enum LedgerAccountType {
+  USER_WALLET
+  USER_CALL
+  USER_PLACEMENT
+  SYSTEM_CLEARING
+  SYSTEM_INTEREST
+  SYSTEM_FEES
+  SYSTEM_SUSPENSE
+}
+
+enum JournalKind {
+  DEPOSIT
+  WITHDRAWAL
+  CALL_DEPOSIT
+  CALL_WITHDRAW
+  PLACEMENT
+  INTEREST
+  MATURITY
+  ADJUSTMENT
+  FEE
+  REFERRAL
+}
+
+enum OtpPurpose {
+  SIGNUP
+  LOGIN
+  PASSWORD_RESET
+  PIN_RESET
+}
+
+enum PlacementKind {
+  CALL
+  FIXED
+  EXPLORE
+}
+
+enum PlacementStatus {
+  ACTIVE
+  MATURED
+  CLOSED
+}
+
+enum MaturityInstruction {
+  WALLET
+  ROLLOVER
+  PAYOUT
+}
+
+enum ProductAvailability {
+  OPEN
+  CLOSING
+  CLOSED
+  COMING_SOON
+}
+
+enum WithdrawalStatus {
+  PROCESSING
+  SUCCESSFUL
+  DECLINED
+}
+
+enum GiftStatus {
+  PENDING
+  CLAIMED
+  CANCELLED
+  EXPIRED
+}
+
+enum AdminRole {
+  SUPER
+  GLOBAL
+  COMPLIANCE
+  OPERATIONS
+  MARKETING
+}
+
+enum RateChangeStatus {
+  PENDING
+  APPROVED
+  REJECTED
+}
+
+enum TicketStatus {
+  OPEN
+  IN_PROGRESS
+  RESOLVED
+  CLOSED
+}
+
+model User {
+  id               String    @id @default(cuid())
+  email            String?   @unique
+  phone            String?   @unique
+  passwordHash     String?
+  firstName        String
+  middleName       String?
+  surname          String
+  dateOfBirth      DateTime?
+  gender           String?
+  occupation       String?
+  employmentStatus String?
+  sourceOfFunds    String?
+  addressStreet    String?
+  addressCity      String?
+  addressState     String?
+  addressLga       String?
+  addressPending   Boolean   @default(false)
+  referralCode     String    @unique
+  referredBy       String?
+  kycTier          KycTier   @default(TIER_0)
+  pinHash          String?
+  biometricsLogin  Boolean   @default(false)
+  biometricsTxn    Boolean   @default(false)
+  failedLoginCount Int       @default(0)
+  lockedUntil      DateTime?
+  frozen           Boolean   @default(false)
+  monnifyAccountNo String?
+  monnifyBankName   String?
+  createdAt        DateTime  @default(now())
+  updatedAt        DateTime  @updatedAt
+
+  sessions         Session[]
+  otps             OtpChallenge[]
+  ledgerAccounts   LedgerAccount[]
+  auditEvents      AuditEvent[]        @relation("ActorUser")
+  consents         ConsentAcceptance[]
+  kycProfile       KycProfile?
+  placements       Placement[]
+  payoutBanks      PayoutBank[]
+  cardTokens       CardToken[]
+  withdrawals      WithdrawalRequest[]
+  paymentIntents   PaymentIntent[]
+  giftsSent        Gift[]              @relation("GiftsSent")
+  giftsReceived    Gift[]              @relation("GiftsReceived")
+  notifications    Notification[]
+  tickets          SupportTicket[]
+  chatSessions     ChatSession[]
+  autoInvestRules  AutoInvestRule[]
+  notificationPrefs NotificationPref?
+}
+
+model Session {
+  id               String    @id @default(cuid())
+  userId           String
+  user             User      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  refreshTokenHash String
+  deviceName       String?
+  userAgent        String?
+  ipAddress        String?
+  lastActiveAt     DateTime  @default(now())
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+
+  @@index([userId])
+  @@index([refreshTokenHash])
+}
+
+model OtpChallenge {
+  id         String     @id @default(cuid())
+  userId     String?
+  user       User?      @relation(fields: [userId], references: [id], onDelete: Cascade)
+  target     String
+  purpose    OtpPurpose
+  codeHash   String
+  attempts   Int        @default(0)
+  expiresAt  DateTime
+  consumedAt DateTime?
+  createdAt  DateTime   @default(now())
+
+  @@index([target, purpose])
+}
+
+model KycProfile {
+  id              String        @id @default(cuid())
+  userId          String        @unique
+  user            User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  status          KycCaseStatus @default(NOT_STARTED)
+  bvn             String?
+  bvnName         String?
+  bvnMatchScore   Float?
+  nin             String?
+  livenessPassed  Boolean       @default(false)
+  selfieUrl       String?
+  addressDocUrl   String?
+  rejectionReason String?
+  reviewedByAdminId String?
+  reviewedAt      DateTime?
+  createdAt       DateTime      @default(now())
+  updatedAt       DateTime      @updatedAt
+}
+
+model LedgerAccount {
+  id          String            @id @default(cuid())
+  userId      String?
+  user        User?             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  type        LedgerAccountType
+  /// Distinguishes multiple USER_PLACEMENT accounts; "default" for wallet/call/system
+  tag         String            @default("default")
+  currency    String            @default("NGN")
+  balanceKobo BigInt            @default(0)
+  createdAt   DateTime          @default(now())
+  updatedAt   DateTime          @updatedAt
+  lines       JournalLine[]
+
+  @@unique([userId, type, currency, tag])
+  @@index([type])
+}
+
+model JournalEntry {
+  id             String      @id @default(cuid())
+  kind           JournalKind
+  reference      String      @unique
+  idempotencyKey String?     @unique
+  description    String?
+  metadata       Json?
+  createdAt      DateTime    @default(now())
+  lines          JournalLine[]
+}
+
+model JournalLine {
+  id         String        @id @default(cuid())
+  entryId    String
+  entry      JournalEntry  @relation(fields: [entryId], references: [id], onDelete: Cascade)
+  accountId  String
+  account    LedgerAccount @relation(fields: [accountId], references: [id])
+  amountKobo BigInt
+  createdAt  DateTime      @default(now())
+
+  @@index([accountId])
+  @@index([entryId])
+}
+
+model RateBand {
+  id           String   @id @default(cuid())
+  code         String   @unique
+  label        String
+  minDays      Int
+  maxDays      Int?
+  rateBps      Int
+  effectiveFrom DateTime @default(now())
+  createdAt    DateTime @default(now())
+  updatedAt    DateTime @updatedAt
+  changeRequests RateChangeRequest[]
+}
+
+model RateChangeRequest {
+  id            String           @id @default(cuid())
+  bandId        String
+  band          RateBand         @relation(fields: [bandId], references: [id])
+  proposedBps   Int
+  effectiveFrom DateTime
+  status        RateChangeStatus @default(PENDING)
+  reason        String?
+  makerAdminId  String
+  checkerAdminId String?
+  decidedAt     DateTime?
+  createdAt     DateTime         @default(now())
+}
+
+model ProductCategory {
+  id        String    @id @default(cuid())
+  slug      String    @unique
+  name      String
+  sortOrder Int       @default(0)
+  products  Product[]
+}
+
+model Product {
+  id             String              @id @default(cuid())
+  categoryId     String
+  category       ProductCategory     @relation(fields: [categoryId], references: [id])
+  slug           String              @unique
+  name           String
+  blurb          String
+  description    String?
+  rateBps        Int
+  tenorDays      Int
+  minimumKobo    BigInt
+  availability   ProductAvailability @default(OPEN)
+  issuer         String?
+  largeTicket    Boolean             @default(false)
+  termsVersion   String              @default("1.0")
+  createdAt      DateTime            @default(now())
+  updatedAt      DateTime            @updatedAt
+  placements     Placement[]
+  accessRequests ProductAccessRequest[]
+}
+
+model ProductAccessRequest {
+  id        String   @id @default(cuid())
+  productId String
+  product   Product  @relation(fields: [productId], references: [id])
+  userId    String
+  message   String?
+  createdAt DateTime @default(now())
+}
+
+model Placement {
+  id                  String              @id @default(cuid())
+  userId              String
+  user                User                @relation(fields: [userId], references: [id], onDelete: Cascade)
+  kind                PlacementKind
+  productId           String?
+  product             Product?            @relation(fields: [productId], references: [id])
+  name                String
+  principalKobo       BigInt
+  rateBps             Int
+  tenorDays           Int?
+  startDate           DateTime            @default(now())
+  maturityDate        DateTime?
+  status              PlacementStatus     @default(ACTIVE)
+  maturityInstruction MaturityInstruction @default(WALLET)
+  accruedKobo         BigInt              @default(0)
+  ledgerAccountId     String?
+  goalKobo            BigInt?
+  isGift              Boolean             @default(false)
+  createdAt           DateTime            @default(now())
+  updatedAt           DateTime            @updatedAt
+
+  @@index([userId, status])
+  @@index([maturityDate, status])
+
+  gifts Gift[]
+}
+
+model PayoutBank {
+  id            String   @id @default(cuid())
+  userId        String
+  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  bankCode      String
+  bankName      String
+  accountNumber String
+  accountName   String
+  nameMatched   Boolean  @default(false)
+  createdAt     DateTime @default(now())
+
+  withdrawals   WithdrawalRequest[]
+}
+
+model CardToken {
+  id           String   @id @default(cuid())
+  userId       String
+  user         User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider     String   @default("paystack")
+  token        String
+  last4        String
+  brand        String?
+  nickname     String?
+  createdAt    DateTime @default(now())
+}
+
+enum PaymentStatus {
+  PENDING
+  SUCCESS
+  FAILED
+}
+
+model PaymentIntent {
+  id            String        @id @default(cuid())
+  userId        String
+  user          User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  provider      String
+  channel       String
+  amountKobo    BigInt
+  feeKobo       BigInt        @default(0)
+  status        PaymentStatus @default(PENDING)
+  reference     String        @unique
+  providerRef   String?
+  authorizationUrl String?
+  metadata      Json?
+  createdAt     DateTime      @default(now())
+  completedAt   DateTime?
+
+  @@index([userId, status])
+  @@index([providerRef])
+}
+
+model WithdrawalRequest {
+  id            String           @id @default(cuid())
+  userId        String
+  user          User             @relation(fields: [userId], references: [id], onDelete: Cascade)
+  payoutBankId  String
+  payoutBank    PayoutBank       @relation(fields: [payoutBankId], references: [id])
+  amountKobo    BigInt
+  status        WithdrawalStatus @default(PROCESSING)
+  declineReason String?
+  reference     String           @unique
+  providerRef   String?
+  processedByAdminId String?
+  processedAt   DateTime?
+  createdAt     DateTime         @default(now())
+  updatedAt     DateTime         @updatedAt
+
+  @@index([status])
+}
+
+model Gift {
+  id             String     @id @default(cuid())
+  senderId       String
+  sender         User       @relation("GiftsSent", fields: [senderId], references: [id])
+  recipientId    String?
+  recipient      User?      @relation("GiftsReceived", fields: [recipientId], references: [id])
+  recipientPhone String?
+  placementId    String?
+  placement      Placement? @relation(fields: [placementId], references: [id])
+  claimCode      String     @unique
+  message        String?
+  status         GiftStatus @default(PENDING)
+  amountKobo     BigInt
+  createdAt      DateTime   @default(now())
+  claimedAt      DateTime?
+  expiresAt      DateTime?
+}
+
+model AutoInvestRule {
+  id          String   @id @default(cuid())
+  userId      String
+  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  label       String
+  amountKobo  BigInt
+  dayOfMonth  Int
+  active      Boolean  @default(true)
+  cardTokenId String?
+  createdAt   DateTime @default(now())
+}
+
+model Notification {
+  id        String   @id @default(cuid())
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  title     String
+  body      String
+  href      String?
+  readAt    DateTime?
+  createdAt DateTime @default(now())
+
+  @@index([userId, createdAt])
+}
+
+model NotificationPref {
+  id               String  @id @default(cuid())
+  userId           String  @unique
+  user             User    @relation(fields: [userId], references: [id], onDelete: Cascade)
+  emailDeposits    Boolean @default(true)
+  emailWithdrawals Boolean @default(true)
+  emailInvestments Boolean @default(true)
+  emailMaturities  Boolean @default(true)
+  emailDigest      Boolean @default(true)
+  pushProducts     Boolean @default(true)
+  pushMaturities   Boolean @default(true)
+}
+
+model LearnArticle {
+  id          String   @id @default(cuid())
+  slug        String   @unique
+  title       String
+  summary     String
+  body        String
+  category    String?
+  published   Boolean  @default(true)
+  createdAt   DateTime @default(now())
+}
+
+model FeedCard {
+  id        String   @id @default(cuid())
+  title     String
+  body      String
+  kind      String
+  href      String?
+  active    Boolean  @default(true)
+  sortOrder Int      @default(0)
+  createdAt DateTime @default(now())
+}
+
+model SupportTicket {
+  id        String       @id @default(cuid())
+  userId    String
+  user      User         @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category  String
+  subject   String
+  body      String
+  status    TicketStatus @default(OPEN)
+  createdAt DateTime     @default(now())
+  updatedAt DateTime     @updatedAt
+}
+
+model ChatSession {
+  id        String        @id @default(cuid())
+  userId    String
+  user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  createdAt DateTime      @default(now())
+  messages  ChatMessage[]
+}
+
+model ChatMessage {
+  id        String      @id @default(cuid())
+  sessionId String
+  session   ChatSession @relation(fields: [sessionId], references: [id], onDelete: Cascade)
+  role      String
+  content   String
+  blocks    Json?
+  createdAt DateTime    @default(now())
+}
+
+model AdminUser {
+  id           String    @id @default(cuid())
+  email        String    @unique
+  name         String
+  passwordHash String
+  role         AdminRole
+  pinHash      String?
+  active       Boolean   @default(true)
+  createdAt    DateTime  @default(now())
+  updatedAt    DateTime  @updatedAt
+  sessions     AdminSession[]
+}
+
+model AdminSession {
+  id               String    @id @default(cuid())
+  adminId          String
+  admin            AdminUser @relation(fields: [adminId], references: [id], onDelete: Cascade)
+  refreshTokenHash String
+  locked           Boolean   @default(false)
+  lastActiveAt     DateTime  @default(now())
+  revokedAt        DateTime?
+  createdAt        DateTime  @default(now())
+}
+
+model AuditEvent {
+  id           String   @id @default(cuid())
+  actorUserId  String?
+  actorUser    User?    @relation("ActorUser", fields: [actorUserId], references: [id])
+  actorAdminId String?
+  action       String
+  entityType   String?
+  entityId     String?
+  before       Json?
+  after        Json?
+  ipAddress    String?
+  userAgent    String?
+  createdAt    DateTime @default(now())
+
+  @@index([createdAt])
+  @@index([action])
+  @@index([entityType, entityId])
+}
+
+model ConsentAcceptance {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  docKey     String
+  version    String
+  acceptedAt DateTime @default(now())
+
+  @@index([userId, docKey])
+}
+
+model JobRun {
+  id        String   @id @default(cuid())
+  jobName   String
+  status    String
+  detail    Json?
+  startedAt DateTime @default(now())
+  finishedAt DateTime?
+}

@@ -1,0 +1,155 @@
+import { Router } from "express";
+import { asyncHandler, AppError } from "../lib/errors.js";
+import type { AuthRequest } from "../middleware/auth.js";
+import { requireAuth } from "../middleware/auth.js";
+import { prisma } from "../lib/prisma.js";
+import { koboToNaira } from "../lib/crypto.js";
+import { ensureUserCall, ensureUserWallet, getWalletBalanceKobo } from "../services/money.js";
+
+export const portfolioRouter = Router();
+
+portfolioRouter.get(
+  "/",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const wallet = await ensureUserWallet(req.userId!);
+    const call = await ensureUserCall(req.userId!);
+    const placements = await prisma.placement.findMany({
+      where: { userId: req.userId!, status: "ACTIVE" },
+    });
+
+    const fixed = placements.filter((p) => p.kind === "FIXED");
+    const explore = placements.filter((p) => p.kind === "EXPLORE");
+    const fixedTotal = fixed.reduce((s, p) => s + p.principalKobo, 0n);
+    const exploreTotal = explore.reduce((s, p) => s + p.principalKobo, 0n);
+    const total = wallet.balanceKobo + call.balanceKobo + fixedTotal + exploreTotal;
+
+    res.json({
+      data: {
+        total: koboToNaira(total),
+        allocation: {
+          wallet: koboToNaira(wallet.balanceKobo),
+          call: koboToNaira(call.balanceKobo),
+          fixed: koboToNaira(fixedTotal),
+          explore: koboToNaira(exploreTotal),
+        },
+        holdings: placements.map((p) => ({
+          id: p.id,
+          kind: p.kind,
+          name: p.name,
+          principal: koboToNaira(p.principalKobo),
+          ratePct: p.rateBps / 100,
+          tenorDays: p.tenorDays,
+          maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
+          accrued: koboToNaira(p.accruedKobo),
+          status: p.status,
+        })),
+      },
+    });
+  }),
+);
+
+portfolioRouter.get(
+  "/holdings/:id",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const p = await prisma.placement.findFirst({
+      where: { id: String(req.params.id), userId: req.userId! },
+      include: { product: true },
+    });
+    if (!p) throw new AppError(404, "Holding not found", "NOT_FOUND");
+    res.json({
+      data: {
+        id: p.id,
+        kind: p.kind,
+        name: p.name,
+        principal: koboToNaira(p.principalKobo),
+        ratePct: p.rateBps / 100,
+        tenorDays: p.tenorDays,
+        startDate: p.startDate.toISOString().slice(0, 10),
+        maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
+        accrued: koboToNaira(p.accruedKobo),
+        status: p.status,
+        maturityInstruction: p.maturityInstruction,
+        product: p.product
+          ? { id: p.product.id, name: p.product.name, slug: p.product.slug }
+          : null,
+      },
+    });
+  }),
+);
+
+portfolioRouter.get(
+  "/maturities",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const items = await prisma.placement.findMany({
+      where: { userId: req.userId!, status: "ACTIVE", maturityDate: { not: null } },
+      orderBy: { maturityDate: "asc" },
+    });
+    res.json({
+      data: items.map((p) => ({
+        id: p.id,
+        name: p.name,
+        amount: koboToNaira(p.principalKobo),
+        maturityDate: p.maturityDate!.toISOString().slice(0, 10),
+        daysLeft: Math.max(
+          0,
+          Math.ceil((p.maturityDate!.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
+        ),
+      })),
+    });
+  }),
+);
+
+portfolioRouter.get(
+  "/transactions",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const accounts = await prisma.ledgerAccount.findMany({
+      where: { userId: req.userId! },
+      select: { id: true },
+    });
+    const ids = accounts.map((a) => a.id);
+    const lines = await prisma.journalLine.findMany({
+      where: { accountId: { in: ids } },
+      include: { entry: true },
+      orderBy: { createdAt: "desc" },
+      take: 100,
+    });
+
+    res.json({
+      data: lines.map((l) => ({
+        id: l.entry.id,
+        reference: l.entry.reference,
+        kind: l.entry.kind,
+        description: l.entry.description,
+        amount: koboToNaira(l.amountKobo < 0n ? -l.amountKobo : l.amountKobo),
+        direction: l.amountKobo >= 0n ? "credit" : "debit",
+        createdAt: l.entry.createdAt,
+      })),
+    });
+  }),
+);
+
+portfolioRouter.get(
+  "/transactions/:reference",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const entry = await prisma.journalEntry.findUnique({
+      where: { reference: String(req.params.reference) },
+      include: { lines: true },
+    });
+    if (!entry) throw new AppError(404, "Transaction not found", "NOT_FOUND");
+    res.json({
+      data: {
+        id: entry.id,
+        reference: entry.reference,
+        kind: entry.kind,
+        description: entry.description,
+        createdAt: entry.createdAt,
+        metadata: entry.metadata,
+      },
+    });
+  }),
+);
