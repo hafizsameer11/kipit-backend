@@ -587,3 +587,11 @@ model JobRun {
   startedAt DateTime @default(now())
   finishedAt DateTime?
 }
+
+/** Key/value config for admin system settings, digest, report schedules. */
+model AppConfig {
+  key       String   @id
+  value     Json
+  updatedAt DateTime @updatedAt
+  updatedBy String?
+}
