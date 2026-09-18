@@ -287,3 +287,28 @@ investRouter.post(
     res.status(201).json({ data: { id: rule.id } });
   }),
 );
+
+investRouter.patch(
+  "/auto-invest/:id",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z.object({ active: z.boolean() }).parse(req.body);
+    const existing = await prisma.autoInvestRule.findFirst({
+      where: { id: String(req.params.id), userId: req.userId! },
+    });
+    if (!existing) throw new AppError(404, "Auto-invest rule not found", "NOT_FOUND");
+    const rule = await prisma.autoInvestRule.update({
+      where: { id: existing.id },
+      data: { active: body.active },
+    });
+    res.json({
+      data: {
+        id: rule.id,
+        label: rule.label,
+        amount: koboToNaira(rule.amountKobo),
+        dayOfMonth: rule.dayOfMonth,
+        active: rule.active,
+      },
+    });
+  }),
+);
