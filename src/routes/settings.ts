@@ -45,13 +45,42 @@ settingsRouter.patch(
         occupation: z.string().optional(),
         employmentStatus: z.string().optional(),
         sourceOfFunds: z.string().optional(),
+        dateOfBirth: z.string().datetime().or(z.string().regex(/^\d{4}-\d{2}-\d{2}$/)).optional(),
+        gender: z.string().optional(),
+        biometricsLogin: z.boolean().optional(),
+        biometricsTxn: z.boolean().optional(),
+        firstName: z.string().min(1).optional(),
+        middleName: z.string().optional().nullable(),
+        surname: z.string().min(1).optional(),
       })
       .parse(req.body);
-    const user = await prisma.user.update({
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
+    if (user.kycTier !== "TIER_0") {
+      if (body.firstName || body.surname || body.dateOfBirth || body.gender) {
+        throw new AppError(400, "Identity fields are locked after verification", "PROFILE_LOCKED");
+      }
+    }
+
+    const updated = await prisma.user.update({
       where: { id: req.userId! },
-      data: body,
+      data: {
+        ...(body.phone !== undefined ? { phone: body.phone } : {}),
+        ...(body.occupation !== undefined ? { occupation: body.occupation } : {}),
+        ...(body.employmentStatus !== undefined ? { employmentStatus: body.employmentStatus } : {}),
+        ...(body.sourceOfFunds !== undefined ? { sourceOfFunds: body.sourceOfFunds } : {}),
+        ...(body.gender !== undefined ? { gender: body.gender } : {}),
+        ...(body.biometricsLogin !== undefined ? { biometricsLogin: body.biometricsLogin } : {}),
+        ...(body.biometricsTxn !== undefined ? { biometricsTxn: body.biometricsTxn } : {}),
+        ...(body.firstName !== undefined ? { firstName: body.firstName } : {}),
+        ...(body.middleName !== undefined ? { middleName: body.middleName } : {}),
+        ...(body.surname !== undefined ? { surname: body.surname } : {}),
+        ...(body.dateOfBirth !== undefined
+          ? { dateOfBirth: new Date(body.dateOfBirth) }
+          : {}),
+      },
     });
-    res.json({ data: publicUser(user) });
+    res.json({ data: publicUser(updated) });
   }),
 );
 

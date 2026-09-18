@@ -31,6 +31,8 @@ authRouter.post(
         middleName: z.string().optional(),
         surname: z.string().min(1),
         referralCode: z.string().optional(),
+        biometricsLogin: z.boolean().optional(),
+        biometricsTxn: z.boolean().optional(),
       })
       .parse(req.body);
 
