@@ -4,8 +4,15 @@ import { asyncHandler, AppError } from "../lib/errors.js";
 import type { AuthRequest } from "../middleware/auth.js";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
-import { publicUser, setTransactionPin, verifyTransactionPin } from "../services/auth.js";
-import { revokeSession } from "../services/auth.js";
+import {
+  publicUser,
+  requestOtp,
+  revokeSession,
+  setTransactionPin,
+  verifyOtp,
+  verifyTransactionPin,
+} from "../services/auth.js";
+import { writeAudit } from "../services/audit.js";
 
 export const settingsRouter = Router();
 
@@ -134,6 +141,98 @@ settingsRouter.post(
     }
     await verifyTransactionPin(req.userId!, body.currentPin);
     await setTransactionPin(req.userId!, body.newPin);
+    res.json({ data: { ok: true } });
+  }),
+);
+
+function parseDobInput(raw: string): Date | null {
+  const trimmed = raw.trim();
+  const iso = /^\d{4}-\d{2}-\d{2}$/.test(trimmed)
+    ? trimmed
+    : (() => {
+        const m = trimmed.match(/^(\d{1,2})\s*[\/\-]\s*(\d{1,2})\s*[\/\-]\s*(\d{4})$/);
+        if (!m) return null;
+        const day = m[1]!.padStart(2, "0");
+        const month = m[2]!.padStart(2, "0");
+        return `${m[3]}-${month}-${day}`;
+      })();
+  if (!iso) return null;
+  const d = new Date(`${iso}T00:00:00.000Z`);
+  return Number.isNaN(d.getTime()) ? null : d;
+}
+
+settingsRouter.post(
+  "/pin/reset/request",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z.object({ dateOfBirth: z.string().min(4) }).parse(req.body);
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
+    if (!user.email) {
+      throw new AppError(400, "Add an email to your account before resetting your PIN", "EMAIL_REQUIRED");
+    }
+    const inputDob = parseDobInput(body.dateOfBirth);
+    if (!inputDob || !user.dateOfBirth) {
+      throw new AppError(400, "Date of birth does not match our records", "DOB_MISMATCH");
+    }
+    const stored = user.dateOfBirth.toISOString().slice(0, 10);
+    const given = inputDob.toISOString().slice(0, 10);
+    if (stored !== given) {
+      throw new AppError(400, "Date of birth does not match our records", "DOB_MISMATCH");
+    }
+
+    const otp = await requestOtp({
+      target: user.email,
+      purpose: "PIN_RESET",
+      userId: user.id,
+    });
+
+    const at = user.email.indexOf("@");
+    const hint =
+      at > 1
+        ? `${user.email[0]}${"•".repeat(Math.min(at - 1, 4))}${user.email.slice(at)}`
+        : user.email;
+
+    res.json({
+      data: {
+        sent: true,
+        targetHint: hint,
+        expiresAt: otp.expiresAt,
+        ...(otp.debugCode ? { debugCode: otp.debugCode } : {}),
+      },
+    });
+  }),
+);
+
+settingsRouter.post(
+  "/pin/reset",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        code: z.string().min(4).max(8),
+        newPin: z.string().length(4),
+        confirmPin: z.string().length(4),
+      })
+      .parse(req.body);
+    if (body.newPin !== body.confirmPin) {
+      throw new AppError(400, "PINs do not match", "PIN_MISMATCH");
+    }
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
+    if (!user.email) {
+      throw new AppError(400, "Add an email to your account before resetting your PIN", "EMAIL_REQUIRED");
+    }
+    await verifyOtp({
+      target: user.email,
+      purpose: "PIN_RESET",
+      code: body.code,
+    });
+    await setTransactionPin(user.id, body.newPin);
+    await writeAudit({
+      actorUserId: user.id,
+      action: "user.pin_reset",
+      entityType: "User",
+      entityId: user.id,
+    });
     res.json({ data: { ok: true } });
   }),
 );
