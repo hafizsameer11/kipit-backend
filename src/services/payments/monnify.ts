@@ -1,5 +1,5 @@
 import { createHash } from "node:crypto";
-import { env, monnifyBaseUrl, paymentsUseMock } from "../../lib/env.js";
+import { env, monnifyBaseUrl, monnifyUseMock } from "../../lib/env.js";
 import { AppError } from "../../lib/errors.js";
 import type { VirtualAccount } from "./types.js";
 
@@ -59,7 +59,7 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
     };
   }
 
-  if (paymentsUseMock() || !env.MONNIFY_API_KEY) {
+  if (monnifyUseMock() || !env.MONNIFY_API_KEY) {
     return mockVirtualAccount(user);
   }
 
@@ -109,7 +109,7 @@ export function verifyMonnifyWebhookSignature(
   payload: string,
   signatureHeader: string | undefined,
 ): boolean {
-  if (paymentsUseMock() || !env.MONNIFY_SECRET_KEY) return true;
+  if (monnifyUseMock() || !env.MONNIFY_SECRET_KEY) return true;
   if (!signatureHeader) return false;
   const computed = createHash("sha512")
     .update(env.MONNIFY_SECRET_KEY + payload)

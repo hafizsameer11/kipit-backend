@@ -131,13 +131,20 @@ Dev-only: `POST /v1/admin/jobs/maturity/run`
 
 ## Payments (Monnify + Paystack)
 
-Default: **sandbox mock** (`PAYMENTS_MODE=sandbox`, `PAYMENTS_MOCK=true`) — funding works without any provider keys.
+Default: Monnify stays mocked (`PAYMENTS_MOCK=true`) until Monnify keys are set.
+
+**Paystack test mode:** set `PAYSTACK_SECRET_KEY=sk_test_…` and `PAYSTACK_PUBLIC_KEY=pk_test_…`.
+Real Checkout is used automatically whenever a secret key is present (unless `PAYSTACK_MOCK=true`).
 
 | Flow | Provider | Endpoints |
 |------|----------|-----------|
 | Bank transfer VA | Monnify | `GET /v1/wallet/virtual-account`, `POST /v1/wallet/fund/transfer/confirm`, webhook `POST /v1/webhooks/monnify` |
 | Card | Paystack | `POST /v1/wallet/fund/card/initialize`, `POST /v1/wallet/fund/card/confirm`, webhook `POST /v1/webhooks/paystack` |
 | Withdrawal payout | Paystack transfer | Admin `POST /v1/admin/withdrawals/:id/complete` |
+
+### Test cards (Paystack)
+
+Use Paystack’s test cards (e.g. `4084084084084081`) after Checkout opens. Min deposit ₦1,000.
 
 ### Going live on the server
 
@@ -146,7 +153,7 @@ Default: **sandbox mock** (`PAYMENTS_MODE=sandbox`, `PAYMENTS_MOCK=true`) — fu
 3. Point Monnify/Paystack webhook URLs to `https://your-api/v1/webhooks/monnify` and `/paystack`
 4. Set `APP_BASE_URL` and `WEB_APP_URL` to production URLs
 
-Until then, leave mock on — the UI journeys credit wallets end-to-end.
+Until Monnify keys exist, bank-transfer mock still credits in sandbox. Card uses live Paystack API as soon as test/live keys are set.
 
 ## Client wiring
 
