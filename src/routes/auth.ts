@@ -7,6 +7,7 @@ import {
   createSession,
   loginWithPassword,
   publicUser,
+  refreshSession,
   registerUser,
   requestOtp,
   resetPasswordWithOtp,
@@ -109,6 +110,15 @@ authRouter.post(
       userAgent: req.get("user-agent") ?? undefined,
     });
 
+    res.json({ data: session });
+  }),
+);
+
+authRouter.post(
+  "/refresh",
+  asyncHandler(async (req, res) => {
+    const body = z.object({ refreshToken: z.string().min(10) }).parse(req.body);
+    const session = await refreshSession(body.refreshToken);
     res.json({ data: session });
   }),
 );
