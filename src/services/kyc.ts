@@ -53,13 +53,39 @@ export async function submitBvn(userId: string, bvn: string) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   const typedName = `${user.firstName} ${user.middleName ?? ""} ${user.surname}`;
 
+  // Instant sandbox match only for the demo BVN. Any other 11-digit BVN goes to compliance review.
   if (bvn !== DEMO_BVN) {
-    await prisma.kycProfile.upsert({
+    const profile = await prisma.kycProfile.upsert({
       where: { userId },
-      create: { userId, bvn, status: "IN_PROGRESS" },
-      update: { bvn, status: "IN_PROGRESS", rejectionReason: "BVN not found in sandbox" },
+      create: {
+        userId,
+        bvn,
+        bvnName: null,
+        status: "PENDING_REVIEW",
+        rejectionReason: null,
+      },
+      update: {
+        bvn,
+        bvnName: null,
+        status: "PENDING_REVIEW",
+        rejectionReason: null,
+      },
     });
-    throw new AppError(400, "BVN verification failed", "BVN_FAILED");
+
+    await writeAudit({
+      actorUserId: userId,
+      action: "kyc.bvn_pending_review",
+      entityType: "KycProfile",
+      entityId: profile.id,
+    });
+
+    return {
+      match: "pending" as const,
+      score: 0,
+      bvnName: "Pending verification",
+      profileId: profile.id,
+      pending: true,
+    };
   }
 
   const bvnName = `${user.surname.toUpperCase()} ${user.firstName.toUpperCase()} ${(user.middleName ?? "").toUpperCase()}`.trim();
@@ -79,21 +105,32 @@ export async function submitBvn(userId: string, bvn: string) {
       bvnName,
       bvnMatchScore: score,
       status: score >= 0.5 ? "IN_PROGRESS" : "PENDING_REVIEW",
+      rejectionReason: null,
     },
   });
 
   return {
-    match: score >= 0.85 ? "strong" : score >= 0.5 ? "partial" : "mismatch",
+    match: score >= 0.85 ? ("strong" as const) : score >= 0.5 ? ("partial" as const) : ("mismatch" as const),
     score,
     bvnName,
     profileId: profile.id,
+    pending: score < 0.5,
   };
 }
 
 export async function confirmBvnMatch(userId: string) {
   const profile = await prisma.kycProfile.findUniqueOrThrow({ where: { userId } });
   if (!profile.bvn) throw new AppError(400, "BVN not submitted", "BVN_MISSING");
-  if (profile.bvn !== DEMO_BVN) {
+
+  // Non-demo BVNs stay in PENDING_REVIEW until an admin approves.
+  if (profile.bvn !== DEMO_BVN || profile.status === "PENDING_REVIEW") {
+    if (profile.status === "PENDING_REVIEW") {
+      throw new AppError(
+        409,
+        "BVN is awaiting compliance review",
+        "BVN_PENDING_REVIEW",
+      );
+    }
     throw new AppError(400, "BVN verification failed", "BVN_FAILED");
   }
 
@@ -171,9 +208,13 @@ export async function adminReviewKyc(input: {
   reason?: string;
 }) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: input.userId } });
+  const profile = await prisma.kycProfile.findUniqueOrThrow({ where: { userId: input.userId } });
+
   if (input.approve) {
+    // BVN-only pending → Tier 1; NIN / full Tier 2 pack → Tier 2
+    const nextTier = profile.nin ? "TIER_2" : "TIER_1";
     await prisma.$transaction([
-      prisma.user.update({ where: { id: input.userId }, data: { kycTier: "TIER_2" } }),
+      prisma.user.update({ where: { id: input.userId }, data: { kycTier: nextTier } }),
       prisma.kycProfile.update({
         where: { userId: input.userId },
         data: {
@@ -181,6 +222,11 @@ export async function adminReviewKyc(input: {
           reviewedByAdminId: input.adminId,
           reviewedAt: new Date(),
           rejectionReason: null,
+          ...(nextTier === "TIER_1" && !profile.bvnName
+            ? {
+                bvnName: `${user.surname.toUpperCase()} ${user.firstName.toUpperCase()}`.trim(),
+              }
+            : {}),
         },
       }),
     ]);
@@ -198,7 +244,13 @@ export async function adminReviewKyc(input: {
 
   await writeAudit({
     actorAdminId: input.adminId,
-    action: input.approve ? "kyc.tier2_approved" : "kyc.tier2_rejected",
+    action: input.approve
+      ? profile.nin
+        ? "kyc.tier2_approved"
+        : "kyc.tier1_approved"
+      : profile.nin
+        ? "kyc.tier2_rejected"
+        : "kyc.tier1_rejected",
     entityType: "User",
     entityId: user.id,
     after: { reason: input.reason },
