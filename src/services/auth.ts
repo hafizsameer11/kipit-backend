@@ -7,6 +7,7 @@ import {
   makeReferralCode,
   signAccessToken,
   signRefreshToken,
+  verifyRefreshToken,
   verifySecret,
   weakPin,
 } from "../lib/crypto.js";
@@ -262,6 +263,45 @@ export async function revokeSession(sessionId: string, userId: string) {
     where: { id: sessionId },
     data: { revokedAt: new Date() },
   });
+}
+
+/** Rotate refresh token and issue a new access token. */
+export async function refreshSession(refreshToken: string) {
+  let claims: { sub: string; sid: string };
+  try {
+    claims = verifyRefreshToken(refreshToken);
+  } catch {
+    throw new AppError(401, "Invalid refresh token", "REFRESH_INVALID");
+  }
+
+  const session = await prisma.session.findFirst({
+    where: { id: claims.sid, userId: claims.sub, revokedAt: null },
+  });
+  if (!session) throw new AppError(401, "Session revoked", "SESSION_REVOKED");
+
+  const ok = await verifySecret(refreshToken, session.refreshTokenHash);
+  if (!ok) throw new AppError(401, "Invalid refresh token", "REFRESH_INVALID");
+
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: claims.sub } });
+  if (user.lockedUntil && user.lockedUntil > new Date()) {
+    throw new AppError(423, "Account temporarily locked", "ACCOUNT_LOCKED");
+  }
+
+  const accessToken = signAccessToken(user.id, session.id);
+  const nextRefresh = signRefreshToken(user.id, session.id);
+  const refreshTokenHash = await hashSecret(nextRefresh);
+
+  await prisma.session.update({
+    where: { id: session.id },
+    data: { refreshTokenHash, lastActiveAt: new Date() },
+  });
+
+  return {
+    user: publicUser(user),
+    accessToken,
+    refreshToken: nextRefresh,
+    sessionId: session.id,
+  };
 }
 
 export async function resetPasswordWithOtp(input: {

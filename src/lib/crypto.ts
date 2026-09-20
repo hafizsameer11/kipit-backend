@@ -49,6 +49,19 @@ export function verifyAccessToken(token: string): AccessClaims {
   return payload;
 }
 
+export type RefreshClaims = {
+  sub: string;
+  sid: string;
+  typ: "refresh";
+  jti: string;
+};
+
+export function verifyRefreshToken(token: string): RefreshClaims {
+  const payload = jwt.verify(token, env.JWT_REFRESH_SECRET) as RefreshClaims;
+  if (payload.typ !== "refresh") throw new Error("Invalid token type");
+  return payload;
+}
+
 export function nairaToKobo(naira: number) {
   return BigInt(Math.round(naira * 100));
 }
