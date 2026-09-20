@@ -21,6 +21,7 @@ import { webhooksRouter } from "./routes/webhooks.js";
 import { runMaturityEngine } from "./jobs/maturity.js";
 import type { AuthRequest } from "./middleware/auth.js";
 import { requireAuth } from "./middleware/auth.js";
+import { env, monnifyUseMock, paystackUseMock } from "./lib/env.js";
 
 export function createApp() {
   const app = express();
@@ -66,8 +67,9 @@ export function createApp() {
       payments: {
         monnify: true,
         paystack: true,
-        mode: process.env.PAYMENTS_MODE ?? "sandbox",
-        mock: process.env.PAYMENTS_MOCK !== "false",
+        mode: env.PAYMENTS_MODE,
+        monnifyMock: monnifyUseMock(),
+        paystackMock: paystackUseMock(),
       },
     });
   });

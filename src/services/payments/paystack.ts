@@ -1,5 +1,5 @@
 import { createHmac } from "node:crypto";
-import { env, paymentsUseMock, paystackBaseUrl } from "../../lib/env.js";
+import { env, paystackUseMock, paystackBaseUrl } from "../../lib/env.js";
 import { AppError } from "../../lib/errors.js";
 import type { CardInitResult, CardVerifyResult } from "./types.js";
 
@@ -30,7 +30,7 @@ export async function initializePaystackCard(input: {
   callbackUrl: string;
   metadata?: Record<string, unknown>;
 }): Promise<CardInitResult> {
-  if (paymentsUseMock() || !env.PAYSTACK_SECRET_KEY) {
+  if (paystackUseMock()) {
     return {
       provider: "paystack",
       reference: input.reference,
@@ -65,7 +65,7 @@ export async function initializePaystackCard(input: {
 }
 
 export async function verifyPaystackTransaction(reference: string): Promise<CardVerifyResult> {
-  if (paymentsUseMock() || !env.PAYSTACK_SECRET_KEY) {
+  if (paystackUseMock()) {
     return {
       success: true,
       reference,
@@ -108,7 +108,7 @@ export function verifyPaystackWebhookSignature(
   rawBody: string,
   signatureHeader: string | undefined,
 ): boolean {
-  if (paymentsUseMock() || !env.PAYSTACK_SECRET_KEY) return true;
+  if (paystackUseMock()) return true;
   if (!signatureHeader) return false;
   const hash = createHmac("sha512", env.PAYSTACK_SECRET_KEY).update(rawBody).digest("hex");
   return hash === signatureHeader;
@@ -124,7 +124,7 @@ export async function initiatePaystackTransfer(input: {
   bankCode: string;
   accountName: string;
 }): Promise<{ transferCode: string; status: string }> {
-  if (paymentsUseMock() || !env.PAYSTACK_SECRET_KEY) {
+  if (paystackUseMock()) {
     return { transferCode: `TRF_MOCK_${input.reference}`, status: "success" };
   }
 

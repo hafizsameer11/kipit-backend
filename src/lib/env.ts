@@ -30,13 +30,17 @@ const envSchema = z.object({
   /** sandbox = use provider sandbox URLs; live = production URLs */
   PAYMENTS_MODE: z.enum(["sandbox", "live"]).default("sandbox"),
   /**
-   * When true (default in sandbox without keys), Monnify/Paystack calls are
-   * simulated locally. Set false and provide keys to hit real sandbox APIs.
+   * Global mock switch (mainly Monnify). Paystack uses real API whenever
+   * PAYSTACK_SECRET_KEY is set (sk_test_… or sk_live_…), unless PAYSTACK_MOCK=true.
    */
   PAYMENTS_MOCK: z
     .enum(["true", "false"])
     .default("true")
     .transform((v) => v === "true"),
+  PAYSTACK_MOCK: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true")),
 
   APP_BASE_URL: z.string().default("http://localhost:4000"),
   WEB_APP_URL: z.string().default("http://localhost:8080"),
@@ -65,10 +69,28 @@ export function paystackBaseUrl() {
   return "https://api.paystack.co";
 }
 
-export function paymentsUseMock() {
+/** True when Monnify should be simulated (no keys or PAYMENTS_MOCK). */
+export function monnifyUseMock() {
   if (env.PAYMENTS_MOCK) return true;
-  // Auto-mock when keys are missing so local/dev always works.
-  const hasMonnify = Boolean(env.MONNIFY_API_KEY && env.MONNIFY_SECRET_KEY && env.MONNIFY_CONTRACT_CODE);
-  const hasPaystack = Boolean(env.PAYSTACK_SECRET_KEY);
-  return !(hasMonnify || hasPaystack);
+  return !(
+    env.MONNIFY_API_KEY &&
+    env.MONNIFY_SECRET_KEY &&
+    env.MONNIFY_CONTRACT_CODE
+  );
+}
+
+/**
+ * True when Paystack should be simulated.
+ * With sk_test_ / sk_live_ in PAYSTACK_SECRET_KEY → real Paystack API.
+ */
+export function paystackUseMock() {
+  if (env.PAYSTACK_MOCK === true) return true;
+  if (env.PAYSTACK_MOCK === false) return !env.PAYSTACK_SECRET_KEY;
+  // Default: real Paystack whenever a secret key is present (test or live).
+  return !Boolean(env.PAYSTACK_SECRET_KEY?.trim());
+}
+
+/** @deprecated Prefer monnifyUseMock / paystackUseMock — true only if both would mock. */
+export function paymentsUseMock() {
+  return monnifyUseMock() && paystackUseMock();
 }

@@ -1,6 +1,6 @@
 import { prisma } from "../../lib/prisma.js";
 import { AppError } from "../../lib/errors.js";
-import { env, paymentsUseMock } from "../../lib/env.js";
+import { env, monnifyUseMock, paystackUseMock } from "../../lib/env.js";
 import { koboToNaira, makeReference, nairaToKobo } from "../../lib/crypto.js";
 import { creditWalletDeposit, getWalletBalanceKobo } from "../ledger.js";
 import { writeAudit } from "../audit.js";
@@ -65,7 +65,7 @@ export async function initializeCardFunding(input: {
         publicKey: init.publicKey,
         cardTokenId: input.cardTokenId,
         saveCard: input.saveCard ?? false,
-        mock: paymentsUseMock(),
+        mock: paystackUseMock(),
       },
     },
   });
@@ -80,6 +80,7 @@ export async function initializeCardFunding(input: {
     publicKey: init.publicKey,
     accessCode: init.accessCode,
     mode: env.PAYMENTS_MODE,
+    mock: paystackUseMock(),
   };
 }
 
@@ -168,13 +169,13 @@ export async function confirmBankTransfer(input: {
       channel: "transfer",
       amountKobo,
       reference,
-      metadata: { accountNumber: user.monnifyAccountNo, mock: paymentsUseMock() },
+      metadata: { accountNumber: user.monnifyAccountNo, mock: monnifyUseMock() },
     },
   });
 
   // Mock / sandbox without provider keys: credit immediately and persist PaymentIntent SUCCESS.
   // Live with real Monnify: leave PENDING until webhook arrives.
-  const simulate = input.forceSimulate ?? (paymentsUseMock() || env.PAYMENTS_MODE === "sandbox");
+  const simulate = input.forceSimulate ?? monnifyUseMock();
   if (simulate) {
     return completeIntent(intent.id, `mock-trf-${reference}`);
   }
@@ -194,7 +195,7 @@ export async function confirmCardPayment(input: { userId: string; reference: str
   if (!intent) throw new AppError(404, "Payment not found", "PAYMENT_NOT_FOUND");
 
   const verified = await verifyPaystackTransaction(input.reference);
-  if (!verified.success && env.PAYMENTS_MODE === "live") {
+  if (!verified.success && !paystackUseMock()) {
     await prisma.paymentIntent.update({
       where: { id: intent.id },
       data: { status: "FAILED", completedAt: new Date() },
