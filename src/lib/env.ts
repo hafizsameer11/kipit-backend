@@ -66,6 +66,14 @@ const envSchema = z.object({
     .enum(["true", "false"])
     .optional()
     .transform((v) => (v === undefined ? undefined : v === "true")),
+
+  /**
+   * Ask AI — OpenAI-compatible chat completions (OpenAI, Azure-compatible proxies, Groq, etc.).
+   * When OPENAI_API_KEY is empty, chat falls back to rule-based intents.
+   */
+  OPENAI_API_KEY: z.string().optional().default(""),
+  OPENAI_BASE_URL: z.string().optional().default("https://api.openai.com/v1"),
+  OPENAI_MODEL: z.string().optional().default("gpt-4o-mini"),
 });
 
 export const env = envSchema.parse(process.env);
@@ -117,4 +125,13 @@ export function premblyUseMock() {
 
 export function premblyBaseUrl() {
   return (env.PREMBLY_BASE_URL || "https://api.prembly.com").replace(/\/$/, "");
+}
+
+/** True when Ask AI should use a live LLM (OpenAI-compatible). */
+export function askAiLlmEnabled() {
+  return Boolean(env.OPENAI_API_KEY?.trim());
+}
+
+export function openaiBaseUrl() {
+  return (env.OPENAI_BASE_URL || "https://api.openai.com/v1").replace(/\/$/, "");
 }
