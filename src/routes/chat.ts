@@ -94,6 +94,12 @@ async function buildAssistantReply(userId: string, raw: string) {
           name: next.name,
           date: next.maturityDate.toISOString().slice(0, 10),
           amount: koboToNaira(next.principalKobo),
+          rate: `${next.rateBps / 100}% p.a.`,
+          daysLeft: Math.max(
+            0,
+            Math.ceil((next.maturityDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
+          ),
+          expectedPayout: koboToNaira(next.principalKobo + next.accruedKobo),
         },
         { kind: "handoff", label: "View holding", to: `/portfolio/${next.id}` },
       ],
