@@ -329,9 +329,9 @@ settingsRouter.post(
   asyncHandler(async (req: AuthRequest, res) => {
     const body = z
       .object({
-        category: z.string().min(1),
-        subject: z.string().min(1),
-        body: z.string().min(1),
+        category: z.string().min(1).max(80),
+        subject: z.string().min(1).max(160),
+        body: z.string().min(1).max(4000),
       })
       .parse(req.body);
     const ticket = await prisma.supportTicket.create({
@@ -342,7 +342,68 @@ settingsRouter.post(
         body: body.body,
       },
     });
-    res.status(201).json({ data: { id: ticket.id, status: ticket.status } });
+    await prisma.notification.create({
+      data: {
+        userId: req.userId!,
+        title: "Support ticket received",
+        body: `We've logged “${ticket.subject}”. Our team typically replies within one business day.`,
+        href: `/settings/help/tickets/${ticket.id}`,
+      },
+    });
+    res.status(201).json({
+      data: {
+        id: ticket.id,
+        status: ticket.status,
+        category: ticket.category,
+        subject: ticket.subject,
+        createdAt: ticket.createdAt,
+      },
+    });
+  }),
+);
+
+settingsRouter.get(
+  "/help/tickets",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const rows = await prisma.supportTicket.findMany({
+      where: { userId: req.userId! },
+      orderBy: { createdAt: "desc" },
+      take: 50,
+    });
+    res.json({
+      data: rows.map((t) => ({
+        id: t.id,
+        category: t.category,
+        subject: t.subject,
+        body: t.body,
+        status: t.status,
+        createdAt: t.createdAt,
+        updatedAt: t.updatedAt,
+      })),
+    });
+  }),
+);
+
+settingsRouter.get(
+  "/help/tickets/:id",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const ticket = await prisma.supportTicket.findFirst({
+      where: { id: String(req.params.id), userId: req.userId! },
+    });
+    if (!ticket) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+    res.json({
+      data: {
+        id: ticket.id,
+        category: ticket.category,
+        subject: ticket.subject,
+        body: ticket.body,
+        status: ticket.status,
+        createdAt: ticket.createdAt,
+        updatedAt: ticket.updatedAt,
+      },
+    });
   }),
 );
 
