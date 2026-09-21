@@ -23,6 +23,110 @@ async function paystackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   return json;
 }
 
+const FALLBACK_NGN_BANKS = [
+  { code: "058", name: "Guaranty Trust Bank" },
+  { code: "033", name: "United Bank For Africa" },
+  { code: "011", name: "First Bank of Nigeria" },
+  { code: "057", name: "Zenith Bank" },
+  { code: "032", name: "Union Bank of Nigeria" },
+  { code: "214", name: "First City Monument Bank" },
+  { code: "044", name: "Access Bank" },
+  { code: "070", name: "Fidelity Bank" },
+  { code: "076", name: "Polaris Bank" },
+  { code: "082", name: "Keystone Bank" },
+  { code: "221", name: "Stanbic IBTC Bank" },
+  { code: "232", name: "Sterling Bank" },
+  { code: "035", name: "Wema Bank" },
+];
+
+export type PaystackBank = { code: string; name: string };
+
+/** Nigerian NUBAN bank list from Paystack (cached briefly in-process). */
+let banksCache: { at: number; banks: PaystackBank[] } | null = null;
+const BANKS_TTL_MS = 6 * 60 * 60 * 1000;
+
+export async function listPaystackBanks(): Promise<PaystackBank[]> {
+  if (banksCache && Date.now() - banksCache.at < BANKS_TTL_MS) {
+    return banksCache.banks;
+  }
+
+  if (paystackUseMock()) {
+    banksCache = { at: Date.now(), banks: FALLBACK_NGN_BANKS };
+    return FALLBACK_NGN_BANKS;
+  }
+
+  try {
+    const json = await paystackFetch<{
+      data: { name: string; code: string; active?: boolean; currency?: string; type?: string }[];
+    }>("/bank?country=nigeria&currency=NGN&type=nuban");
+
+    const banks = (json.data ?? [])
+      .filter((b) => b.code && b.name && b.active !== false)
+      .map((b) => ({ code: String(b.code), name: String(b.name) }))
+      .sort((a, b) => a.name.localeCompare(b.name));
+
+    if (!banks.length) {
+      banksCache = { at: Date.now(), banks: FALLBACK_NGN_BANKS };
+      return FALLBACK_NGN_BANKS;
+    }
+
+    banksCache = { at: Date.now(), banks };
+    return banks;
+  } catch {
+    // Keep withdrawals usable if Paystack bank list is briefly down.
+    banksCache = { at: Date.now(), banks: FALLBACK_NGN_BANKS };
+    return FALLBACK_NGN_BANKS;
+  }
+}
+
+export type ResolvedPaystackAccount = {
+  accountNumber: string;
+  accountName: string;
+  bankId?: number | null;
+};
+
+/**
+ * Name enquiry via Paystack bank resolve.
+ * Docs: GET /bank/resolve?account_number=&bank_code=
+ */
+export async function resolvePaystackAccount(input: {
+  accountNumber: string;
+  bankCode: string;
+  /** Used only when Paystack is mocked — returned as the resolved account name. */
+  mockAccountName?: string;
+}): Promise<ResolvedPaystackAccount> {
+  const accountNumber = input.accountNumber.replace(/\D/g, "");
+  if (!/^\d{10}$/.test(accountNumber)) {
+    throw new AppError(400, "Account number must be 10 digits", "ACCOUNT_INVALID");
+  }
+  if (!input.bankCode.trim()) {
+    throw new AppError(400, "Bank code is required", "BANK_REQUIRED");
+  }
+
+  if (paystackUseMock()) {
+    return {
+      accountNumber,
+      accountName: (input.mockAccountName?.trim() || `MOCK ACCOUNT ${accountNumber.slice(-4)}`).toUpperCase(),
+      bankId: null,
+    };
+  }
+
+  const qs = new URLSearchParams({
+    account_number: accountNumber,
+    bank_code: input.bankCode.trim(),
+  });
+
+  const json = await paystackFetch<{
+    data: { account_number: string; account_name: string; bank_id?: number };
+  }>(`/bank/resolve?${qs.toString()}`);
+
+  return {
+    accountNumber: json.data.account_number,
+    accountName: json.data.account_name,
+    bankId: json.data.bank_id ?? null,
+  };
+}
+
 export async function initializePaystackCard(input: {
   email: string;
   amountKobo: number;
