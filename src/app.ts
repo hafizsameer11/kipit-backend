@@ -22,7 +22,7 @@ import { runMaturityEngine } from "./jobs/maturity.js";
 import { runKycVerificationJob } from "./jobs/kyc-verify.js";
 import type { AuthRequest } from "./middleware/auth.js";
 import { requireAuth } from "./middleware/auth.js";
-import { env, monnifyUseMock, paystackUseMock, premblyUseMock } from "./lib/env.js";
+import { env, monnifyUseMock, paystackUseMock, premblyUseMock, askAiLlmEnabled } from "./lib/env.js";
 
 export function createApp() {
   const app = express();
@@ -75,6 +75,10 @@ export function createApp() {
       kyc: {
         provider: "prembly",
         mock: premblyUseMock(),
+      },
+      askAi: {
+        llm: askAiLlmEnabled(),
+        model: askAiLlmEnabled() ? env.OPENAI_MODEL : null,
       },
     });
   });
