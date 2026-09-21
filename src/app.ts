@@ -19,9 +19,10 @@ import { giftsRouter } from "./routes/gifts.js";
 import { chatRouter } from "./routes/chat.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { runMaturityEngine } from "./jobs/maturity.js";
+import { runKycVerificationJob } from "./jobs/kyc-verify.js";
 import type { AuthRequest } from "./middleware/auth.js";
 import { requireAuth } from "./middleware/auth.js";
-import { env, monnifyUseMock, paystackUseMock } from "./lib/env.js";
+import { env, monnifyUseMock, paystackUseMock, premblyUseMock } from "./lib/env.js";
 
 export function createApp() {
   const app = express();
@@ -71,6 +72,10 @@ export function createApp() {
         monnifyMock: monnifyUseMock(),
         paystackMock: paystackUseMock(),
       },
+      kyc: {
+        provider: "prembly",
+        mock: premblyUseMock(),
+      },
     });
   });
 
@@ -96,6 +101,17 @@ export function createApp() {
         return res.status(404).json({ error: { message: "Not found" } });
       }
       const result = await runMaturityEngine();
+      res.json({ data: result });
+    }),
+  );
+
+  app.post(
+    "/v1/admin/jobs/kyc-verify/run",
+    asyncHandler(async (_req, res) => {
+      if (process.env.NODE_ENV === "production") {
+        return res.status(404).json({ error: { message: "Not found" } });
+      }
+      const result = await runKycVerificationJob();
       res.json({ data: result });
     }),
   );

@@ -53,6 +53,19 @@ const envSchema = z.object({
   PAYSTACK_SECRET_KEY: z.string().optional().default(""),
   PAYSTACK_PUBLIC_KEY: z.string().optional().default(""),
   PAYSTACK_BASE_URL: z.string().optional().default(""),
+
+  /**
+   * Prembly identity verification (BVN / NIN).
+   * Latest docs: only `x-api-key` is required — no app-id header.
+   * https://docs.prembly.com/docs/authentication
+   */
+  PREMBLY_API_KEY: z.string().optional().default(""),
+  PREMBLY_BASE_URL: z.string().optional().default("https://api.prembly.com"),
+  /** Force mock even when PREMBLY_API_KEY is set. Default: mock when key is empty. */
+  PREMBLY_MOCK: z
+    .enum(["true", "false"])
+    .optional()
+    .transform((v) => (v === undefined ? undefined : v === "true")),
 });
 
 export const env = envSchema.parse(process.env);
@@ -93,4 +106,15 @@ export function paystackUseMock() {
 /** @deprecated Prefer monnifyUseMock / paystackUseMock — true only if both would mock. */
 export function paymentsUseMock() {
   return monnifyUseMock() && paystackUseMock();
+}
+
+/** True when Prembly should be simulated (no API key or PREMBLY_MOCK=true). */
+export function premblyUseMock() {
+  if (env.PREMBLY_MOCK === true) return true;
+  if (env.PREMBLY_MOCK === false) return !env.PREMBLY_API_KEY?.trim();
+  return !Boolean(env.PREMBLY_API_KEY?.trim());
+}
+
+export function premblyBaseUrl() {
+  return (env.PREMBLY_BASE_URL || "https://api.prembly.com").replace(/\/$/, "");
 }
