@@ -108,27 +108,52 @@ portfolioRouter.get(
   asyncHandler(async (req: AuthRequest, res) => {
     const accounts = await prisma.ledgerAccount.findMany({
       where: { userId: req.userId! },
-      select: { id: true },
+      select: { id: true, type: true },
     });
     const ids = accounts.map((a) => a.id);
+    if (!ids.length) {
+      res.json({ data: [] });
+      return;
+    }
+
     const lines = await prisma.journalLine.findMany({
       where: { accountId: { in: ids } },
-      include: { entry: true },
+      include: {
+        entry: true,
+        account: { select: { type: true } },
+      },
       orderBy: { createdAt: "desc" },
-      take: 100,
+      take: 200,
     });
 
-    res.json({
-      data: lines.map((l) => ({
-        id: l.entry.id,
-        reference: l.entry.reference,
-        kind: l.entry.kind,
-        description: l.entry.description,
-        amount: koboToNaira(l.amountKobo < 0n ? -l.amountKobo : l.amountKobo),
-        direction: l.amountKobo >= 0n ? "credit" : "debit",
-        createdAt: l.entry.createdAt,
-      })),
-    });
+    // One row per journal entry; prefer the wallet line for amount/direction.
+    const byEntry = new Map<string, (typeof lines)[number]>();
+    for (const line of lines) {
+      const prev = byEntry.get(line.entryId);
+      if (!prev || line.account.type === "USER_WALLET") {
+        byEntry.set(line.entryId, line);
+      }
+    }
+
+    const rows = [...byEntry.values()]
+      .sort((a, b) => b.entry.createdAt.getTime() - a.entry.createdAt.getTime())
+      .slice(0, 100)
+      .map((l) => {
+        const abs =
+          l.amountKobo < 0n ? -l.amountKobo : l.amountKobo;
+        return {
+          id: l.entry.id,
+          reference: l.entry.reference,
+          kind: l.entry.kind,
+          description: l.entry.description ?? l.entry.kind,
+          amount: koboToNaira(abs),
+          // Positive ledger amount on a user asset account = money in.
+          direction: l.amountKobo >= 0n ? ("credit" as const) : ("debit" as const),
+          createdAt: l.entry.createdAt.toISOString(),
+        };
+      });
+
+    res.json({ data: rows });
   }),
 );
 
