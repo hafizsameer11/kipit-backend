@@ -32,9 +32,34 @@ Rules:
 - NEVER move money, change PIN, approve withdrawals, or invent balances/rates.
 - Only use numbers returned by tools. If a tool fails, say you could not load live data.
 - For funding, investing, or withdrawals, explain briefly and call suggest_handoff so the app shows a secure continue button.
+- For support issues you cannot resolve with tools, help the user file a support ticket via create_support_ticket (confirm category/subject/details first), or list_support_tickets to show open cases.
 - You confirm nothing with PIN in chat — the user does that on the secure screen.
 - If the user asks something outside Kipit (general investing/KYC literacy is OK), answer briefly and steer back to Kipit when useful.
 - Prefer short answers (2–4 sentences) plus tools for cards/CTAs.`;
+
+const TICKET_CATEGORIES = [
+  "Deposits & wallet",
+  "Withdrawals & payouts",
+  "Investments & plans",
+  "Account & verification",
+  "Something else",
+] as const;
+
+const ALLOWED_HANDOFFS = new Set([
+  "/portfolio",
+  "/wallet/add-money",
+  "/wallet/card",
+  "/invest",
+  "/explore",
+  "/withdraw",
+  "/portfolio/transactions",
+  "/portfolio/maturities",
+  "/settings/verification",
+  "/settings/help",
+  "/settings/help/ticket",
+  "/settings/help/tickets",
+  "/fixed-plans/create",
+]);
 
 const TOOLS = [
   {
@@ -109,21 +134,40 @@ const TOOLS = [
       },
     },
   },
+  {
+    type: "function" as const,
+    function: {
+      name: "list_support_tickets",
+      description: "List the user's recent support tickets and statuses.",
+      parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "create_support_ticket",
+      description:
+        "File a support ticket for the user after they confirm the issue. Use one of the allowed categories.",
+      parameters: {
+        type: "object",
+        properties: {
+          category: {
+            type: "string",
+            enum: [...TICKET_CATEGORIES],
+            description: "Ticket category",
+          },
+          subject: { type: "string", description: "Short subject line" },
+          body: {
+            type: "string",
+            description: "Detailed description of the issue, including references if any",
+          },
+        },
+        required: ["category", "subject", "body"],
+        additionalProperties: false,
+      },
+    },
+  },
 ];
-
-const ALLOWED_HANDOFFS = new Set([
-  "/portfolio",
-  "/wallet/add-money",
-  "/wallet/card",
-  "/invest",
-  "/explore",
-  "/withdraw",
-  "/portfolio/transactions",
-  "/portfolio/maturities",
-  "/settings/verification",
-  "/settings/help",
-  "/fixed-plans/create",
-]);
 
 function safeHandoffPath(to: string): string | null {
   const path = to.trim().split("?")[0] || "";
@@ -131,6 +175,7 @@ function safeHandoffPath(to: string): string | null {
   // Allow /explore/:id/subscribe and /portfolio/:id
   if (/^\/explore\/[a-zA-Z0-9_-]+\/subscribe$/.test(path)) return path;
   if (/^\/portfolio\/[a-zA-Z0-9_-]+$/.test(path)) return path;
+  if (/^\/settings\/help\/tickets\/[a-zA-Z0-9_-]+$/.test(path)) return path;
   return null;
 }
 
@@ -261,6 +306,69 @@ async function runTool(
       : [];
     if (options.length) blocks.push({ kind: "chips", options });
     return { ok: true, options };
+  }
+
+  if (name === "list_support_tickets") {
+    const rows = await prisma.supportTicket.findMany({
+      where: { userId },
+      orderBy: { createdAt: "desc" },
+      take: 10,
+    });
+    const tickets = rows.map((t) => ({
+      id: t.id,
+      category: t.category,
+      subject: t.subject,
+      status: t.status,
+      createdAt: t.createdAt.toISOString(),
+      updatedAt: t.updatedAt.toISOString(),
+    }));
+    blocks.push({
+      kind: "chips",
+      options: [
+        { label: "View my tickets", send: "Show my support tickets" },
+        { label: "New ticket", send: "I need to submit a support ticket" },
+      ],
+    });
+    blocks.push({ kind: "handoff", label: "Open ticket list", to: "/settings/help/tickets" });
+    return { count: tickets.length, tickets };
+  }
+
+  if (name === "create_support_ticket") {
+    const category = String(args.category || "").trim();
+    const subject = String(args.subject || "").trim().slice(0, 160);
+    const detail = String(args.body || "").trim().slice(0, 4000);
+    if (!TICKET_CATEGORIES.includes(category as (typeof TICKET_CATEGORIES)[number])) {
+      return { ok: false, error: "Invalid category", allowed: TICKET_CATEGORIES };
+    }
+    if (subject.length < 3 || detail.length < 10) {
+      return { ok: false, error: "Subject and description need more detail before filing." };
+    }
+    const ticket = await prisma.supportTicket.create({
+      data: { userId, category, subject, body: detail },
+    });
+    await prisma.notification.create({
+      data: {
+        userId,
+        title: "Support ticket received",
+        body: `We've logged “${ticket.subject}”. Our team typically replies within one business day.`,
+        href: `/settings/help/tickets/${ticket.id}`,
+      },
+    });
+    blocks.push({
+      kind: "chips",
+      options: [
+        { label: "View ticket", send: `Show ticket ${ticket.id}` },
+        { label: "My tickets", send: "Show my support tickets" },
+      ],
+    });
+    blocks.push({ kind: "handoff", label: "View my tickets", to: "/settings/help/tickets" });
+    return {
+      ok: true,
+      id: ticket.id,
+      status: ticket.status,
+      category: ticket.category,
+      subject: ticket.subject,
+    };
   }
 
   return { error: `Unknown tool: ${name}` };
@@ -410,11 +518,23 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
     };
   }
 
+  if (/(help|support|ticket|faq)/.test(text)) {
+    return {
+      mode: "rules",
+      text: "I can help file a support ticket or show ones you've already submitted. Money never moves in chat.",
+      blocks: [
+        { kind: "chips", options: ["I need to submit a support ticket", "Show my support tickets", "What's my balance?"] },
+        { kind: "handoff", label: "Help centre", to: "/settings/help" },
+        { kind: "handoff", label: "My tickets", to: "/settings/help/tickets" },
+      ],
+    };
+  }
+
   return {
     mode: "rules",
-    text: "I can help with your Kipit account, investments, transactions and available products. I never move money in chat — you confirm with your PIN on the secure screen.",
+    text: "I can help with your Kipit account, investments, transactions, support tickets and available products. I never move money in chat — you confirm with your PIN on the secure screen.",
     blocks: [
-      { kind: "chips", options: ["What's my balance?", "Help me invest", "Track a transaction"] },
+      { kind: "chips", options: ["What's my balance?", "Help me invest", "I need support"] },
     ],
   };
 }
