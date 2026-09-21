@@ -85,7 +85,7 @@ withdrawRouter.post(
     if (!nameMatched) {
       throw new AppError(
         400,
-        "Account name does not match your Kipit profile. Use an account in your legal name.",
+        `Account name does not match your Kipit profile. This account shows as “${resolved.accountName}”. Use an account in your legal name.`,
         "ACCOUNT_NAME_MISMATCH",
       );
     }
