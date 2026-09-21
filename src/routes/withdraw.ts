@@ -9,23 +9,20 @@ import { koboToNaira, makeReference, nairaToKobo } from "../lib/crypto.js";
 import { verifyTransactionPin } from "../services/auth.js";
 import { debitWallet, ensureSystemAccount, getWalletBalanceKobo } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
+import { fuzzyScore } from "../services/kyc.js";
+import { listPaystackBanks, resolvePaystackAccount } from "../services/payments/paystack.js";
+import { paystackUseMock } from "../lib/env.js";
 
 export const withdrawRouter = Router();
 
-const BANKS = [
-  { code: "058", name: "GTBank" },
-  { code: "033", name: "UBA" },
-  { code: "011", name: "First Bank" },
-  { code: "057", name: "Zenith Bank" },
-  { code: "032", name: "Union Bank" },
-  { code: "214", name: "FCMB" },
-];
+const NAME_MATCH_MIN = 0.5;
 
 withdrawRouter.get(
   "/banks",
   requireAuth,
   asyncHandler(async (_req, res) => {
-    res.json({ data: BANKS });
+    const banks = await listPaystackBanks();
+    res.json({ data: banks });
   }),
 );
 
@@ -60,21 +57,81 @@ withdrawRouter.post(
       })
       .parse(req.body);
 
-    const bank = BANKS.find((b) => b.code === body.bankCode);
+    const banks = await listPaystackBanks();
+    const bank = banks.find((b) => b.code === body.bankCode);
     if (!bank) throw new AppError(400, "Unknown bank", "BANK_UNKNOWN");
 
-    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
-    // Sandbox NIBSS name enquiry — match against user legal name
-    const accountName = `${user.firstName} ${user.surname}`.toUpperCase();
+    const user = await prisma.user.findUniqueOrThrow({
+      where: { id: req.userId! },
+      include: { kycProfile: true },
+    });
+    const profileName = [user.firstName, user.middleName, user.surname]
+      .filter(Boolean)
+      .join(" ")
+      .trim();
+    const bvnName = user.kycProfile?.bvnName?.trim() || "";
+    const ninName = user.kycProfile?.ninName?.trim() || "";
+
+    const resolved = await resolvePaystackAccount({
+      accountNumber: body.accountNumber,
+      bankCode: body.bankCode,
+      mockAccountName: paystackUseMock() ? profileName : undefined,
+    });
+
+    const candidates = [profileName, bvnName, ninName].filter(Boolean);
+    const bestScore = Math.max(0, ...candidates.map((name) => fuzzyScore(name, resolved.accountName)));
+    const nameMatched = bestScore >= NAME_MATCH_MIN;
+
+    if (!nameMatched) {
+      throw new AppError(
+        400,
+        "Account name does not match your Kipit profile. Use an account in your legal name.",
+        "ACCOUNT_NAME_MISMATCH",
+      );
+    }
+
+    const existing = await prisma.payoutBank.findFirst({
+      where: {
+        userId: req.userId!,
+        bankCode: bank.code,
+        accountNumber: resolved.accountNumber,
+      },
+    });
+    if (existing) {
+      res.status(200).json({
+        data: {
+          id: existing.id,
+          bankName: existing.bankName,
+          bankCode: existing.bankCode,
+          accountNumber: existing.accountNumber,
+          accountName: existing.accountName,
+          nameMatched: existing.nameMatched,
+        },
+      });
+      return;
+    }
 
     const account = await prisma.payoutBank.create({
       data: {
         userId: req.userId!,
         bankCode: bank.code,
         bankName: bank.name,
-        accountNumber: body.accountNumber,
-        accountName,
+        accountNumber: resolved.accountNumber,
+        accountName: resolved.accountName.toUpperCase(),
         nameMatched: true,
+      },
+    });
+
+    await writeAudit({
+      actorUserId: req.userId,
+      action: "payout_bank.create",
+      entityType: "PayoutBank",
+      entityId: account.id,
+      after: {
+        bankCode: bank.code,
+        accountNumber: resolved.accountNumber,
+        score: bestScore,
+        provider: paystackUseMock() ? "paystack_mock" : "paystack",
       },
     });
 
@@ -82,6 +139,7 @@ withdrawRouter.post(
       data: {
         id: account.id,
         bankName: account.bankName,
+        bankCode: account.bankCode,
         accountNumber: account.accountNumber,
         accountName: account.accountName,
         nameMatched: true,
