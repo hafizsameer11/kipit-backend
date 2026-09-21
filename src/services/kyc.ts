@@ -1,11 +1,12 @@
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
 import { writeAudit } from "./audit.js";
+import type { PremblyPerson } from "./prembly.js";
 
-/** Demo BVN that auto-matches (same as web prototype). */
+/** Demo BVN used in local mock flows (seed / sandbox UX). */
 export const DEMO_BVN = "22123456789";
 
-function normalizeName(s: string) {
+export function normalizeName(s: string) {
   return s
     .toUpperCase()
     .replace(/[^A-Z\s]/g, " ")
@@ -15,13 +16,21 @@ function normalizeName(s: string) {
     .join(" ");
 }
 
-function fuzzyScore(a: string, b: string) {
+export function fuzzyScore(a: string, b: string) {
   const aa = new Set(normalizeName(a).split(" "));
   const bb = new Set(normalizeName(b).split(" "));
   if (!aa.size || !bb.size) return 0;
   let hit = 0;
   for (const t of aa) if (bb.has(t)) hit++;
   return hit / Math.max(aa.size, bb.size);
+}
+
+export function formatPremblyName(person: PremblyPerson) {
+  return person.fullName
+    .split(/\s+/)
+    .filter(Boolean)
+    .map((p) => p.toUpperCase())
+    .join(" ");
 }
 
 export async function getKycStatus(userId: string) {
@@ -37,121 +46,129 @@ export async function getKycStatus(userId: string) {
       bvn: profile.bvn ? profile.bvn.replace(/\d(?=\d{4})/g, "•") : null,
       bvnName: profile.bvnName,
       nin: profile.nin ? "••••••••••" + profile.nin.slice(-3) : null,
+      ninName: profile.ninName,
       livenessPassed: profile.livenessPassed,
       hasAddressDoc: Boolean(profile.addressDocUrl),
       occupation: user.occupation,
       employmentStatus: user.employmentStatus,
       sourceOfFunds: user.sourceOfFunds,
       rejectionReason: profile.rejectionReason,
+      provider: profile.provider,
+      bvnProviderStatus: profile.bvnProviderStatus,
+      ninProviderStatus: profile.ninProviderStatus,
     },
   };
 }
 
+/**
+ * Queue BVN for async Prembly verification (worker job).
+ * Returns immediately with pending:true — never calls Prembly inline.
+ */
 export async function submitBvn(userId: string, bvn: string) {
   if (!/^\d{11}$/.test(bvn)) throw new AppError(400, "BVN must be 11 digits", "BVN_INVALID");
-
-  const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-  const typedName = `${user.firstName} ${user.middleName ?? ""} ${user.surname}`;
-
-  // Instant sandbox match only for the demo BVN. Any other 11-digit BVN goes to compliance review.
-  if (bvn !== DEMO_BVN) {
-    const profile = await prisma.kycProfile.upsert({
-      where: { userId },
-      create: {
-        userId,
-        bvn,
-        bvnName: null,
-        status: "PENDING_REVIEW",
-        rejectionReason: null,
-      },
-      update: {
-        bvn,
-        bvnName: null,
-        status: "PENDING_REVIEW",
-        rejectionReason: null,
-      },
-    });
-
-    await writeAudit({
-      actorUserId: userId,
-      action: "kyc.bvn_pending_review",
-      entityType: "KycProfile",
-      entityId: profile.id,
-    });
-
-    return {
-      match: "pending" as const,
-      score: 0,
-      bvnName: "Pending verification",
-      profileId: profile.id,
-      pending: true,
-    };
-  }
-
-  const bvnName = `${user.surname.toUpperCase()} ${user.firstName.toUpperCase()} ${(user.middleName ?? "").toUpperCase()}`.trim();
-  const score = fuzzyScore(typedName, bvnName);
 
   const profile = await prisma.kycProfile.upsert({
     where: { userId },
     create: {
       userId,
       bvn,
-      bvnName,
-      bvnMatchScore: score,
-      status: score >= 0.5 ? "IN_PROGRESS" : "PENDING_REVIEW",
+      bvnName: null,
+      bvnMatchScore: null,
+      status: "PENDING_REVIEW",
+      provider: "prembly",
+      bvnProviderStatus: "PENDING",
+      providerAttempts: 0,
+      providerLastError: null,
+      providerReference: null,
+      providerCheckedAt: null,
+      rejectionReason: null,
     },
     update: {
       bvn,
-      bvnName,
-      bvnMatchScore: score,
-      status: score >= 0.5 ? "IN_PROGRESS" : "PENDING_REVIEW",
+      bvnName: null,
+      bvnMatchScore: null,
+      status: "PENDING_REVIEW",
+      provider: "prembly",
+      bvnProviderStatus: "PENDING",
+      providerAttempts: 0,
+      providerLastError: null,
+      providerReference: null,
+      providerCheckedAt: null,
       rejectionReason: null,
+      reviewedAt: null,
+      reviewedByAdminId: null,
     },
   });
 
+  await writeAudit({
+    actorUserId: userId,
+    action: "kyc.bvn_queued",
+    entityType: "KycProfile",
+    entityId: profile.id,
+    after: { provider: "prembly" },
+  });
+
   return {
-    match: score >= 0.85 ? ("strong" as const) : score >= 0.5 ? ("partial" as const) : ("mismatch" as const),
-    score,
-    bvnName,
+    match: "pending" as const,
+    score: 0,
+    bvnName: "Pending verification",
     profileId: profile.id,
-    pending: score < 0.5,
+    pending: true,
   };
 }
 
+/**
+ * Legacy confirm step. With async Prembly, Tier 1 is granted by the job.
+ * Kept so older app builds don't break if they still call confirm.
+ */
 export async function confirmBvnMatch(userId: string) {
   const profile = await prisma.kycProfile.findUniqueOrThrow({ where: { userId } });
   if (!profile.bvn) throw new AppError(400, "BVN not submitted", "BVN_MISSING");
 
-  // Non-demo BVNs stay in PENDING_REVIEW until an admin approves.
-  if (profile.bvn !== DEMO_BVN || profile.status === "PENDING_REVIEW") {
-    if (profile.status === "PENDING_REVIEW") {
-      throw new AppError(
-        409,
-        "BVN is awaiting compliance review",
-        "BVN_PENDING_REVIEW",
-      );
-    }
-    throw new AppError(400, "BVN verification failed", "BVN_FAILED");
+  if (profile.status === "APPROVED") {
+    return getKycStatus(userId);
   }
 
-  await prisma.$transaction([
-    prisma.user.update({ where: { id: userId }, data: { kycTier: "TIER_1" } }),
-    prisma.kycProfile.update({
-      where: { userId },
-      data: { status: "APPROVED" },
-    }),
-  ]);
+  if (profile.status === "PENDING_REVIEW" || profile.bvnProviderStatus === "PENDING" || profile.bvnProviderStatus === "RETRY") {
+    throw new AppError(
+      409,
+      "BVN is still being verified. We'll notify you when it's done.",
+      "BVN_PENDING_REVIEW",
+    );
+  }
 
-  await writeAudit({
-    actorUserId: userId,
-    action: "kyc.tier1_approved",
-    entityType: "User",
-    entityId: userId,
-  });
+  if (profile.status === "REJECTED") {
+    throw new AppError(
+      400,
+      profile.rejectionReason ?? "BVN verification failed",
+      "BVN_FAILED",
+    );
+  }
 
-  return getKycStatus(userId);
+  // IN_PROGRESS leftover — promote if we already have a matched name
+  if (profile.status === "IN_PROGRESS" && profile.bvnName && (profile.bvnMatchScore ?? 0) >= 0.5) {
+    await prisma.$transaction([
+      prisma.user.update({ where: { id: userId }, data: { kycTier: "TIER_1" } }),
+      prisma.kycProfile.update({
+        where: { userId },
+        data: { status: "APPROVED", bvnProviderStatus: profile.bvnProviderStatus ?? "SUCCESS" },
+      }),
+    ]);
+    await writeAudit({
+      actorUserId: userId,
+      action: "kyc.tier1_approved",
+      entityType: "User",
+      entityId: userId,
+    });
+    return getKycStatus(userId);
+  }
+
+  throw new AppError(400, "BVN verification failed", "BVN_FAILED");
 }
 
+/**
+ * Queue Tier 2 (NIN + profile) for async Prembly verification.
+ */
 export async function submitTier2(input: {
   userId: string;
   nin: string;
@@ -183,20 +200,46 @@ export async function submitTier2(input: {
       create: {
         userId: input.userId,
         nin: input.nin,
+        ninName: null,
+        ninMatchScore: null,
         livenessPassed: true,
         addressDocUrl: "sandbox://address-doc",
         selfieUrl: "sandbox://selfie",
         status: "PENDING_REVIEW",
+        provider: "prembly",
+        ninProviderStatus: "PENDING",
+        providerAttempts: 0,
+        providerLastError: null,
+        rejectionReason: null,
       },
       update: {
         nin: input.nin,
+        ninName: null,
+        ninMatchScore: null,
         livenessPassed: true,
         addressDocUrl: "sandbox://address-doc",
         selfieUrl: "sandbox://selfie",
         status: "PENDING_REVIEW",
+        provider: "prembly",
+        ninProviderStatus: "PENDING",
+        providerAttempts: 0,
+        providerLastError: null,
+        providerReference: null,
+        providerCheckedAt: null,
+        rejectionReason: null,
+        reviewedAt: null,
+        reviewedByAdminId: null,
       },
     }),
   ]);
+
+  await writeAudit({
+    actorUserId: input.userId,
+    action: "kyc.nin_queued",
+    entityType: "User",
+    entityId: input.userId,
+    after: { provider: "prembly" },
+  });
 
   return getKycStatus(input.userId);
 }
@@ -211,7 +254,6 @@ export async function adminReviewKyc(input: {
   const profile = await prisma.kycProfile.findUniqueOrThrow({ where: { userId: input.userId } });
 
   if (input.approve) {
-    // BVN-only pending → Tier 1; NIN / full Tier 2 pack → Tier 2
     const nextTier = profile.nin ? "TIER_2" : "TIER_1";
     await prisma.$transaction([
       prisma.user.update({ where: { id: input.userId }, data: { kycTier: nextTier } }),
@@ -222,6 +264,9 @@ export async function adminReviewKyc(input: {
           reviewedByAdminId: input.adminId,
           reviewedAt: new Date(),
           rejectionReason: null,
+          ...(nextTier === "TIER_2"
+            ? { ninProviderStatus: "SUCCESS" }
+            : { bvnProviderStatus: "SUCCESS" }),
           ...(nextTier === "TIER_1" && !profile.bvnName
             ? {
                 bvnName: `${user.surname.toUpperCase()} ${user.firstName.toUpperCase()}`.trim(),
@@ -238,6 +283,9 @@ export async function adminReviewKyc(input: {
         rejectionReason: input.reason ?? "Additional information required",
         reviewedByAdminId: input.adminId,
         reviewedAt: new Date(),
+        ...(profile.nin
+          ? { ninProviderStatus: "FAILED" }
+          : { bvnProviderStatus: "FAILED" }),
       },
     });
   }
@@ -254,6 +302,22 @@ export async function adminReviewKyc(input: {
     entityType: "User",
     entityId: user.id,
     after: { reason: input.reason },
+  });
+
+  // Notify on admin reject (approve also useful)
+  await prisma.notification.create({
+    data: {
+      userId: input.userId,
+      title: input.approve
+        ? profile.nin
+          ? "Tier 2 approved"
+          : "Tier 1 approved"
+        : "Verification update",
+      body: input.approve
+        ? "Your identity check was approved."
+        : input.reason ?? "Your verification was not approved. Please review and try again.",
+      href: "/settings/verification",
+    },
   });
 
   return getKycStatus(input.userId);

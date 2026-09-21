@@ -202,14 +202,27 @@ model KycProfile {
   bvnName         String?
   bvnMatchScore   Float?
   nin             String?
+  ninName         String?
+  ninMatchScore   Float?
   livenessPassed  Boolean       @default(false)
   selfieUrl       String?
   addressDocUrl   String?
   rejectionReason String?
+  /// Prembly (or mock) async verification state for the outstanding check.
+  provider        String?
+  bvnProviderStatus String? // PENDING | SUCCESS | FAILED | RETRY
+  ninProviderStatus String? // PENDING | SUCCESS | FAILED | RETRY
+  providerAttempts  Int         @default(0)
+  providerLastError String?
+  providerReference String?
+  providerCheckedAt DateTime?
   reviewedByAdminId String?
   reviewedAt      DateTime?
   createdAt       DateTime      @default(now())
   updatedAt       DateTime      @updatedAt
+
+  @@index([status, bvnProviderStatus])
+  @@index([status, ninProviderStatus])
 }
 
 model LedgerAccount {
