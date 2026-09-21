@@ -52,6 +52,8 @@ kycRouter.post(
         addressCity: z.string().min(1),
         addressState: z.string().min(1),
         addressLga: z.string().min(1),
+        selfieUri: z.string().min(1),
+        addressDocUri: z.string().min(1),
       })
       .parse(req.body);
     res.json({ data: await submitTier2({ userId: req.userId!, ...body }) });

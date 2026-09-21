@@ -48,6 +48,7 @@ export async function getKycStatus(userId: string) {
       nin: profile.nin ? "••••••••••" + profile.nin.slice(-3) : null,
       ninName: profile.ninName,
       livenessPassed: profile.livenessPassed,
+      hasSelfie: Boolean(profile.selfieUrl),
       hasAddressDoc: Boolean(profile.addressDocUrl),
       occupation: user.occupation,
       employmentStatus: user.employmentStatus,
@@ -168,6 +169,7 @@ export async function confirmBvnMatch(userId: string) {
 
 /**
  * Queue Tier 2 (NIN + profile) for async Prembly verification.
+ * Selfie / address docs are required references — liveness is never auto-passed here.
  */
 export async function submitTier2(input: {
   userId: string;
@@ -179,8 +181,16 @@ export async function submitTier2(input: {
   addressCity: string;
   addressState: string;
   addressLga: string;
+  selfieUri: string;
+  addressDocUri: string;
 }) {
   if (!/^\d{11}$/.test(input.nin)) throw new AppError(400, "NIN must be 11 digits", "NIN_INVALID");
+  if (!input.selfieUri.trim()) {
+    throw new AppError(400, "Selfie is required for Tier 2", "SELFIE_REQUIRED");
+  }
+  if (!input.addressDocUri.trim()) {
+    throw new AppError(400, "Proof of address is required for Tier 2", "ADDRESS_DOC_REQUIRED");
+  }
 
   await prisma.$transaction([
     prisma.user.update({
@@ -202,9 +212,9 @@ export async function submitTier2(input: {
         nin: input.nin,
         ninName: null,
         ninMatchScore: null,
-        livenessPassed: true,
-        addressDocUrl: "sandbox://address-doc",
-        selfieUrl: "sandbox://selfie",
+        livenessPassed: false,
+        addressDocUrl: input.addressDocUri.trim(),
+        selfieUrl: input.selfieUri.trim(),
         status: "PENDING_REVIEW",
         provider: "prembly",
         ninProviderStatus: "PENDING",
@@ -216,9 +226,9 @@ export async function submitTier2(input: {
         nin: input.nin,
         ninName: null,
         ninMatchScore: null,
-        livenessPassed: true,
-        addressDocUrl: "sandbox://address-doc",
-        selfieUrl: "sandbox://selfie",
+        livenessPassed: false,
+        addressDocUrl: input.addressDocUri.trim(),
+        selfieUrl: input.selfieUri.trim(),
         status: "PENDING_REVIEW",
         provider: "prembly",
         ninProviderStatus: "PENDING",
@@ -265,7 +275,10 @@ export async function adminReviewKyc(input: {
           reviewedAt: new Date(),
           rejectionReason: null,
           ...(nextTier === "TIER_2"
-            ? { ninProviderStatus: "SUCCESS" }
+            ? {
+                ninProviderStatus: "SUCCESS",
+                livenessPassed: Boolean(profile.selfieUrl),
+              }
             : { bvnProviderStatus: "SUCCESS" }),
           ...(nextTier === "TIER_1" && !profile.bvnName
             ? {
