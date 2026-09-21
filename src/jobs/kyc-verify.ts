@@ -294,42 +294,36 @@ async function processNinCase(profileId: string) {
     return "rejected";
   }
 
-  await prisma.$transaction([
-    prisma.user.update({
-      where: { id: profile.userId },
-      data: { kycTier: "TIER_2" },
-    }),
-    prisma.kycProfile.update({
-      where: { id: profile.id },
-      data: {
-        provider: "prembly",
-        status: "APPROVED",
-        ninName,
-        ninMatchScore: score,
-        ninProviderStatus: "SUCCESS",
-        providerAttempts: attempts,
-        providerLastError: null,
-        providerReference: result.reference,
-        providerCheckedAt: new Date(),
-        rejectionReason: null,
-        reviewedAt: new Date(),
-      },
-    }),
-  ]);
+  // Prembly NIN match only — Tier 2 stays pending until compliance reviews selfie + address.
+  await prisma.kycProfile.update({
+    where: { id: profile.id },
+    data: {
+      provider: "prembly",
+      status: "PENDING_REVIEW",
+      ninName,
+      ninMatchScore: score,
+      ninProviderStatus: "SUCCESS",
+      providerAttempts: attempts,
+      providerLastError: null,
+      providerReference: result.reference,
+      providerCheckedAt: new Date(),
+      rejectionReason: null,
+    },
+  });
 
   await notifyUser({
     userId: profile.userId,
     email: profile.user.email,
-    title: "Tier 2 approved",
-    body: "Your NIN was verified successfully. Withdrawals and higher limits are unlocked.",
-    href: "/withdraw",
+    title: "NIN check complete",
+    body: "Your NIN matched. We're still reviewing your selfie and proof of address for Tier 2.",
+    href: "/settings/verification",
   });
 
   await writeAudit({
     actorUserId: profile.userId,
-    action: "kyc.tier2_approved_provider",
-    entityType: "User",
-    entityId: profile.userId,
+    action: "kyc.nin_matched_provider",
+    entityType: "KycProfile",
+    entityId: profile.id,
     after: { score, provider: "prembly", reference: result.reference },
   });
   return "approved";
