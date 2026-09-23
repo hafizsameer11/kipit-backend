@@ -12,6 +12,11 @@ type UserLike = {
   monnifyBankName: string | null;
 };
 
+/** Stable Monnify reserved-account reference for a Kipit user. */
+export function monnifyAccountReference(userId: string) {
+  return `kipit-${userId}`;
+}
+
 function mockVirtualAccount(user: UserLike): VirtualAccount {
   const digest = createHash("sha256").update(user.id).digest("hex");
   const accountNumber = `99${digest.slice(0, 8)}`.replace(/\D/g, "").padEnd(10, "0").slice(0, 10);
@@ -21,7 +26,7 @@ function mockVirtualAccount(user: UserLike): VirtualAccount {
     accountName: `KIPIT / ${user.surname.toUpperCase()} ${user.firstName.toUpperCase()}`,
     bankName: "Moniepoint MFB",
     bankCode: "50515",
-    reference: `VA-${user.id.slice(-8)}`,
+    reference: monnifyAccountReference(user.id),
   };
 }
 
@@ -56,6 +61,7 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
       accountNumber: user.monnifyAccountNo,
       accountName: `KIPIT / ${user.surname.toUpperCase()} ${user.firstName.toUpperCase()}`,
       bankName: user.monnifyBankName,
+      reference: monnifyAccountReference(user.id),
     };
   }
 
@@ -64,6 +70,7 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
   }
 
   const token = await monnifyToken();
+  const accountReference = monnifyAccountReference(user.id);
   const res = await fetch(`${monnifyBaseUrl()}/api/v2/bank-transfer/reserved-accounts`, {
     method: "POST",
     headers: {
@@ -71,7 +78,7 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
       "Content-Type": "application/json",
     },
     body: JSON.stringify({
-      accountReference: `kipit-${user.id}`,
+      accountReference,
       accountName: `${user.firstName} ${user.surname}`.slice(0, 100),
       currencyCode: "NGN",
       contractCode: env.MONNIFY_CONTRACT_CODE,
@@ -91,7 +98,6 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
   };
   const account = json.responseBody?.accounts?.[0];
   if (!res.ok || !account) {
-    // Fall back to mock so funding still works while keys/contracts are being set up.
     console.warn("[monnify] reserved account failed, using mock VA:", json.responseMessage);
     return mockVirtualAccount(user);
   }
@@ -101,8 +107,69 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
     accountName: `KIPIT / ${user.surname.toUpperCase()} ${user.firstName.toUpperCase()}`,
     bankName: account.bankName,
     bankCode: account.bankCode,
-    reference: json.responseBody?.accountReference,
+    reference: json.responseBody?.accountReference ?? accountReference,
   };
+}
+
+export type MonnifyReservedTxn = {
+  transactionReference: string;
+  paymentReference?: string | null;
+  amountPaidNaira: number;
+  paymentStatus: string;
+  completedOn?: string | null;
+  customerName?: string | null;
+};
+
+/**
+ * Recent transactions on a reserved VA.
+ * GET /api/v1/bank-transfer/reserved-accounts/transactions
+ */
+export async function listReservedAccountTransactions(input: {
+  accountReference: string;
+  page?: number;
+  size?: number;
+}): Promise<MonnifyReservedTxn[]> {
+  if (monnifyUseMock() || !env.MONNIFY_API_KEY) return [];
+
+  const token = await monnifyToken();
+  const qs = new URLSearchParams({
+    accountReference: input.accountReference,
+    page: String(input.page ?? 0),
+    size: String(input.size ?? 20),
+  });
+  const res = await fetch(
+    `${monnifyBaseUrl()}/api/v1/bank-transfer/reserved-accounts/transactions?${qs}`,
+    { headers: { Authorization: `Bearer ${token}` } },
+  );
+  const json = (await res.json()) as {
+    requestSuccessful?: boolean;
+    responseMessage?: string;
+    responseBody?: {
+      content?: {
+        transactionReference?: string;
+        paymentReference?: string;
+        amountPaid?: number;
+        amount?: number;
+        paymentStatus?: string;
+        completedOn?: string;
+        customerName?: string;
+      }[];
+    };
+  };
+  if (!res.ok) {
+    throw new AppError(502, json.responseMessage ?? "Monnify transactions failed", "MONNIFY_TXNS");
+  }
+
+  return (json.responseBody?.content ?? [])
+    .filter((row) => row.transactionReference)
+    .map((row) => ({
+      transactionReference: String(row.transactionReference),
+      paymentReference: row.paymentReference ?? null,
+      amountPaidNaira: Number(row.amountPaid ?? row.amount ?? 0),
+      paymentStatus: String(row.paymentStatus ?? "").toUpperCase(),
+      completedOn: row.completedOn ?? null,
+      customerName: row.customerName ?? null,
+    }));
 }
 
 export function verifyMonnifyWebhookSignature(

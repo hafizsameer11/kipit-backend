@@ -184,7 +184,7 @@ export async function confirmBankTransfer(input: {
     pending: true,
     reference: intent.reference,
     amount: input.amountNaira,
-    message: "Waiting for Monnify webhook to credit your wallet",
+    message: "Waiting for Monnify to confirm the transfer (polled every minute)",
   };
 }
 

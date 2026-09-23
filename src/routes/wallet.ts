@@ -100,8 +100,8 @@ walletRouter.post(
 
 /**
  * User confirms they sent a bank transfer.
- * In sandbox mode the wallet is credited immediately (simulates Monnify webhook).
- * In live mode the intent stays pending until the Monnify webhook arrives.
+ * In sandbox/mock mode the wallet is credited immediately.
+ * In live mode the intent stays pending until the Monnify VA poll job (or webhook) confirms payment.
  */
 walletRouter.post(
   "/fund/transfer/confirm",

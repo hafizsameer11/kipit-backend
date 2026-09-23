@@ -1,10 +1,12 @@
 import { runMaturityEngine } from "./jobs/maturity.js";
 import { runKycVerificationJob } from "./jobs/kyc-verify.js";
+import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import { prisma } from "./lib/prisma.js";
 import { connectRedis } from "./lib/redis.js";
 
 const DAY_MS = 24 * 60 * 60 * 1000;
 const KYC_INTERVAL_MS = 60_000;
+const MONNIFY_VA_INTERVAL_MS = 60_000;
 
 function msUntilMidnight() {
   const now = new Date();
@@ -34,6 +36,17 @@ async function tickKyc() {
   }
 }
 
+async function tickMonnifyVa() {
+  try {
+    const result = await runMonnifyVaPollJob();
+    if (result.credited || result.expired || result.errors) {
+      console.log("[worker] monnify-va-poll", result);
+    }
+  } catch (err) {
+    console.error("[worker] monnify-va-poll failed", err);
+  }
+}
+
 async function main() {
   await prisma.$connect();
   try {
@@ -42,16 +55,18 @@ async function main() {
     console.warn("[worker] redis unavailable");
   }
 
-  console.log("kipit-worker started — maturity @00:00, kyc-verify every 60s");
+  console.log("kipit-worker started — maturity @00:00, kyc-verify + monnify-va every 60s");
 
   setTimeout(() => {
     void tickMaturity();
     setInterval(() => void tickMaturity(), DAY_MS);
   }, msUntilMidnight());
 
-  // Prembly KYC queue — frequent poll so submit → verify feels near-realtime
   void tickKyc();
   setInterval(() => void tickKyc(), KYC_INTERVAL_MS);
+
+  void tickMonnifyVa();
+  setInterval(() => void tickMonnifyVa(), MONNIFY_VA_INTERVAL_MS);
 
   if (process.env.NODE_ENV !== "production") {
     console.log("[worker] scheduling first maturity run in 5s (dev)");
