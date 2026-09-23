@@ -127,14 +127,15 @@ async function completeIntent(intentId: string, providerRef?: string) {
     },
   });
 
-  await prisma.notification.create({
-    data: {
-      userId: intent.userId,
-      title: "Wallet credited",
-      body: `₦${koboToNaira(intent.amountKobo).toLocaleString()} was added to your wallet.`,
-      href: "/wallet/add-money",
-    },
-  });
+  const { notifyCustomer } = await import("../notify.js");
+  await notifyCustomer({
+    userId: intent.userId,
+    title: "Wallet credited",
+    body: `₦${koboToNaira(intent.amountKobo).toLocaleString()} was added to your wallet.`,
+    href: "/wallet/add-money",
+    emailKind: "deposit",
+    amountNaira: koboToNaira(intent.amountKobo),
+  }).catch(() => undefined);
 
   await writeAudit({
     actorUserId: intent.userId,

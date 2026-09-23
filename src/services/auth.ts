@@ -134,6 +134,9 @@ export async function registerUser(input: {
   });
 
   await ensureUserWallet(user.id);
+  await prisma.notificationPref.create({
+    data: { userId: user.id },
+  }).catch(() => undefined);
   await writeAudit({
     actorUserId: user.id,
     action: "user.register",
@@ -142,6 +145,22 @@ export async function registerUser(input: {
     ipAddress: input.ipAddress,
     userAgent: input.userAgent,
   });
+
+  if (user.email) {
+    const { sendWelcomeEmail } = await import("./notify.js");
+    await sendWelcomeEmail({
+      to: user.email,
+      firstName: user.firstName,
+      accountType: "PERSONAL",
+    }).catch((err) => console.warn("[welcome-email]", err));
+    const { logSignupStep } = await import("./signup-funnel.js");
+    await logSignupStep({
+      step: "complete",
+      email: user.email,
+      completed: true,
+      metadata: { userId: user.id },
+    }).catch(() => undefined);
+  }
 
   return user;
 }

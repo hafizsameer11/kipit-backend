@@ -74,6 +74,9 @@ const envSchema = z.object({
   OPENAI_API_KEY: z.string().optional().default(""),
   OPENAI_BASE_URL: z.string().optional().default("https://api.openai.com/v1"),
   OPENAI_MODEL: z.string().optional().default("gpt-4o-mini"),
+
+  /** Comma-separated ops/admin emails for withdrawal request alerts. Falls back to SUPER/GLOBAL/OPERATIONS admins. */
+  OPS_ALERT_EMAILS: z.string().optional().default(""),
 });
 
 export const env = envSchema.parse(process.env);

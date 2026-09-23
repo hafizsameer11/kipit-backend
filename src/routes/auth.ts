@@ -22,6 +22,25 @@ import { koboToNaira } from "../lib/crypto.js";
 export const authRouter = Router();
 
 authRouter.post(
+  "/funnel",
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        step: z.string().min(1).max(40),
+        email: z.string().email().optional(),
+        phone: z.string().optional(),
+        deviceId: z.string().optional(),
+        completed: z.boolean().optional(),
+        metadata: z.record(z.unknown()).optional(),
+      })
+      .parse(req.body);
+    const { logSignupStep } = await import("../services/signup-funnel.js");
+    const row = await logSignupStep(body);
+    res.status(201).json({ data: { id: row?.id ?? null, ok: true } });
+  }),
+);
+
+authRouter.post(
   "/register",
   asyncHandler(async (req, res) => {
     const body = z
