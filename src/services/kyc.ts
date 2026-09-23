@@ -2,7 +2,6 @@ import { prisma } from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
 import { writeAudit } from "./audit.js";
 import type { PremblyPerson } from "./prembly.js";
-import { isStoredUploadUrl } from "./uploads.js";
 
 /** Demo BVN used in local mock flows (seed / sandbox UX). */
 export const DEMO_BVN = "22123456789";
@@ -192,20 +191,8 @@ export async function submitTier2(input: {
   if (!input.addressDocUri.trim()) {
     throw new AppError(400, "Proof of address is required for Tier 2", "ADDRESS_DOC_REQUIRED");
   }
-  if (!isStoredUploadUrl(input.selfieUri)) {
-    throw new AppError(
-      400,
-      "Selfie must be uploaded first. Capture again and resubmit.",
-      "SELFIE_NOT_UPLOADED",
-    );
-  }
-  if (!isStoredUploadUrl(input.addressDocUri)) {
-    throw new AppError(
-      400,
-      "Proof of address must be uploaded first. Attach again and resubmit.",
-      "ADDRESS_NOT_UPLOADED",
-    );
-  }
+  // Temporarily accept legacy local device URIs (file://, content://, etc.) so older
+  // app builds can still submit Tier 2. New builds upload via POST /v1/kyc/documents.
 
   await prisma.$transaction([
     prisma.user.update({
