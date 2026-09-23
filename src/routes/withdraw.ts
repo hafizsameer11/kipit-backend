@@ -196,14 +196,26 @@ withdrawRouter.post(
       },
     });
 
-    await prisma.notification.create({
-      data: {
-        userId: req.userId!,
-        title: "Withdrawal processing",
-        body: `Your withdrawal of ₦${body.amount.toLocaleString()} is being processed.`,
-        href: "/withdraw/tracker",
-      },
-    });
+    const { notifyCustomer, sendOpsWithdrawalAlert } = await import("../services/notify.js");
+    const customer = await prisma.user.findUnique({ where: { id: req.userId! } });
+    await notifyCustomer({
+      userId: req.userId!,
+      title: "Withdrawal processing",
+      body: `Your withdrawal of ₦${body.amount.toLocaleString()} is being processed.`,
+      href: "/withdraw/tracker",
+      emailKind: "withdrawal",
+      amountNaira: body.amount,
+      emailDetail: `Reference ${reference}`,
+    }).catch(() => undefined);
+    if (customer) {
+      await sendOpsWithdrawalAlert({
+        customerName: `${customer.firstName} ${customer.surname}`.trim(),
+        customerEmail: customer.email,
+        amountNaira: body.amount,
+        reference,
+        withdrawalId: row.id,
+      }).catch((err) => console.warn("[ops-withdraw-alert]", err));
+    }
 
     await writeAudit({
       actorUserId: req.userId,

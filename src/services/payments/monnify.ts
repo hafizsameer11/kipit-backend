@@ -10,6 +10,9 @@ type UserLike = {
   surname: string;
   monnifyAccountNo: string | null;
   monnifyBankName: string | null;
+  /** Required by Monnify live reserved accounts */
+  bvn?: string | null;
+  nin?: string | null;
 };
 
 /** Stable Monnify reserved-account reference for a Kipit user. */
@@ -69,6 +72,16 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
     return mockVirtualAccount(user);
   }
 
+  const bvn = user.bvn?.trim() || undefined;
+  const nin = user.nin?.trim() || undefined;
+  if (env.PAYMENTS_MODE === "live" && !bvn && !nin) {
+    throw new AppError(
+      400,
+      "Complete BVN or NIN verification before creating a live virtual account",
+      "KYC_IDENTITY_REQUIRED",
+    );
+  }
+
   const token = await monnifyToken();
   const accountReference = monnifyAccountReference(user.id);
   const res = await fetch(`${monnifyBaseUrl()}/api/v2/bank-transfer/reserved-accounts`, {
@@ -84,6 +97,8 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
       contractCode: env.MONNIFY_CONTRACT_CODE,
       customerEmail: user.email ?? `${user.id}@customers.kipit.ng`,
       customerName: `${user.firstName} ${user.surname}`,
+      ...(bvn ? { bvn } : {}),
+      ...(nin ? { nin } : {}),
       getAllAvailableBanks: false,
       preferredBanks: ["50515", "035"],
     }),
@@ -98,6 +113,15 @@ export async function ensureMonnifyVirtualAccount(user: UserLike): Promise<Virtu
   };
   const account = json.responseBody?.accounts?.[0];
   if (!res.ok || !account) {
+    // Never hand out fake VAs in live — banks will reject them as invalid.
+    if (env.PAYMENTS_MODE === "live" || !monnifyUseMock()) {
+      console.error("[monnify] reserved account failed:", json.responseMessage);
+      throw new AppError(
+        502,
+        json.responseMessage ?? "Could not create Monnify virtual account",
+        "MONNIFY_VA_FAILED",
+      );
+    }
     console.warn("[monnify] reserved account failed, using mock VA:", json.responseMessage);
     return mockVirtualAccount(user);
   }

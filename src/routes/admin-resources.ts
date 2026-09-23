@@ -473,6 +473,17 @@ adminResourcesRouter.patch(
 );
 
 adminResourcesRouter.get(
+  "/products/categories",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.productCategory.findMany({ orderBy: { sortOrder: "asc" } });
+    res.json({
+      data: rows.map((c) => ({ id: c.id, slug: c.slug, name: c.name })),
+    });
+  }),
+);
+
+adminResourcesRouter.get(
   "/products",
   requireAdmin,
   asyncHandler(async (_req, res) => {
@@ -506,12 +517,14 @@ adminResourcesRouter.post(
   asyncHandler(async (req: AdminRequest, res) => {
     const body = z
       .object({
-        categoryId: z.string(),
-        slug: z.string().min(2),
+        categoryId: z.string().optional(),
+        categoryName: z.string().optional(),
+        slug: z.string().min(2).optional(),
         name: z.string().min(2),
-        blurb: z.string().min(2),
+        blurb: z.string().min(2).optional(),
         description: z.string().optional(),
-        rateBps: z.number().int().positive(),
+        rateBps: z.number().int().positive().optional(),
+        ratePct: z.number().positive().optional(),
         tenorDays: z.number().int().positive(),
         minimum: z.number().positive(),
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
@@ -519,17 +532,44 @@ adminResourcesRouter.post(
         largeTicket: z.boolean().optional(),
       })
       .parse(req.body);
+
+    let categoryId = body.categoryId;
+    if (!categoryId) {
+      const name = body.categoryName?.trim() || "Fixed Income";
+      const slug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const cat = await prisma.productCategory.upsert({
+        where: { slug },
+        create: { slug, name, sortOrder: 99 },
+        update: {},
+      });
+      categoryId = cat.id;
+    }
+
+    const rateBps =
+      body.rateBps ??
+      (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+    if (rateBps == null) throw new AppError(400, "rateBps or ratePct required", "RATE_REQUIRED");
+
+    const slug =
+      body.slug?.trim() ||
+      body.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 48) +
+        `-${Date.now().toString(36).slice(-4)}`;
+
     const row = await prisma.product.create({
       data: {
-        categoryId: body.categoryId,
-        slug: body.slug,
+        categoryId,
+        slug,
         name: body.name,
-        blurb: body.blurb,
+        blurb: body.blurb ?? body.name,
         description: body.description,
-        rateBps: body.rateBps,
+        rateBps,
         tenorDays: body.tenorDays,
         minimumKobo: BigInt(Math.round(body.minimum * 100)),
-        availability: body.availability,
+        availability: body.availability ?? "OPEN",
         issuer: body.issuer,
         largeTicket: body.largeTicket ?? false,
       },
@@ -541,7 +581,17 @@ adminResourcesRouter.post(
       entityType: "Product",
       entityId: row.id,
     });
-    res.status(201).json({ data: row });
+    res.status(201).json({
+      data: {
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        ratePct: row.rateBps / 100,
+        tenorDays: row.tenorDays,
+        minimum: koboToNaira(row.minimumKobo),
+        availability: row.availability,
+      },
+    });
   }),
 );
 
@@ -555,6 +605,7 @@ adminResourcesRouter.patch(
         blurb: z.string().optional(),
         description: z.string().optional(),
         rateBps: z.number().int().positive().optional(),
+        ratePct: z.number().positive().optional(),
         tenorDays: z.number().int().positive().optional(),
         minimum: z.number().positive().optional(),
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
@@ -562,13 +613,15 @@ adminResourcesRouter.patch(
         largeTicket: z.boolean().optional(),
       })
       .parse(req.body);
+    const rateBps =
+      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
     const row = await prisma.product.update({
       where: { id: String(req.params.id) },
       data: {
         name: body.name,
         blurb: body.blurb,
         description: body.description,
-        rateBps: body.rateBps,
+        rateBps,
         tenorDays: body.tenorDays,
         minimumKobo:
           body.minimum !== undefined ? BigInt(Math.round(body.minimum * 100)) : undefined,

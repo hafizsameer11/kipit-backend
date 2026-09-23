@@ -97,6 +97,11 @@ enum AdminRole {
   MARKETING
 }
 
+enum AccountType {
+  PERSONAL
+  BUSINESS
+}
+
 enum RateChangeStatus {
   PENDING
   APPROVED
@@ -118,6 +123,10 @@ model User {
   firstName        String
   middleName       String?
   surname          String
+  accountType      AccountType @default(PERSONAL)
+  businessName     String?
+  businessRcNumber String?
+  onboardedByAdminId String?
   dateOfBirth      DateTime?
   gender           String?
   occupation       String?
@@ -612,6 +621,23 @@ model JobRun {
   detail    Json?
   startedAt DateTime @default(now())
   finishedAt DateTime?
+}
+
+/** Incomplete / in-progress customer sign-ups for drop-off analytics. */
+model SignupFunnelEvent {
+  id        String   @id @default(cuid())
+  email     String?
+  phone     String?
+  deviceId  String?
+  step      String
+  completed Boolean  @default(false)
+  metadata  Json?
+  createdAt DateTime @default(now())
+
+  @@index([email, createdAt])
+  @@index([step, createdAt])
+  @@index([deviceId, createdAt])
+  @@index([completed, createdAt])
 }
 
 /** Key/value config for admin system settings, digest, report schedules. */

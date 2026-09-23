@@ -1,51 +1,28 @@
 import {
   creditWalletFrom,
+  debitWallet,
   ensureSystemAccount,
   ensureUserCall,
   ensureUserWallet,
+  interestForPeriod,
 } from "../services/money.js";
-import type { Request, Response, NextFunction } from "express";
 import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
-import { hashSecret, verifySecret, koboToNaira } from "../lib/crypto.js";
+import { hashSecret, verifySecret, koboToNaira, nairaToKobo, makeReferralCode } from "../lib/crypto.js";
 import { adminReviewKyc, getKycStatus } from "../services/kyc.js";
 import { writeAudit } from "../services/audit.js";
+import {
+  requireAdmin,
+  canViewAum,
+  type AdminRequest,
+} from "../middleware/admin.js";
+import { listSignupDropoffs } from "../services/signup-funnel.js";
+import { sendWelcomeEmail, notifyCustomer } from "../services/notify.js";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { Router } from "express";
-
-type AdminRequest = Request & { adminId?: string; adminRole?: string };
-
-async function requireAdmin(req: AdminRequest, _res: Response, next: NextFunction) {
-  try {
-    const header = req.headers.authorization;
-    if (!header?.startsWith("Bearer ")) throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
-    const token = header.slice(7);
-    const payload = jwt.verify(token, env.JWT_ACCESS_SECRET) as {
-      sub: string;
-      sid?: string;
-      typ?: string;
-      role?: string;
-    };
-    if (payload.typ !== "admin") throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
-    const admin = await prisma.adminUser.findFirst({
-      where: { id: payload.sub, active: true },
-    });
-    if (!admin) throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
-    if (payload.sid) {
-      const session = await prisma.adminSession.findFirst({
-        where: { id: payload.sid, adminId: admin.id, revokedAt: null },
-      });
-      if (!session) throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
-    }
-    req.adminId = admin.id;
-    req.adminRole = admin.role;
-    next();
-  } catch (err) {
-    next(err instanceof AppError ? err : new AppError(401, "Unauthorized", "UNAUTHORIZED"));
-  }
-}
+import { nanoid } from "nanoid";
 
 async function userBalances(userId: string) {
   const wallet = await ensureUserWallet(userId);
@@ -129,7 +106,7 @@ adminRouter.post(
 adminRouter.get(
   "/dashboard",
   requireAdmin,
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req: AdminRequest, res) => {
     const wallets = await prisma.ledgerAccount.aggregate({
       where: { type: "USER_WALLET" },
       _sum: { balanceKobo: true },
@@ -155,21 +132,25 @@ adminRouter.get(
       (wallets._sum.balanceKobo ?? 0n) +
       (call._sum.balanceKobo ?? 0n) +
       (placements._sum.principalKobo ?? 0n);
+    const showAum = canViewAum(req.adminRole);
 
     res.json({
       data: {
-        fum: koboToNaira(fum),
+        fum: showAum ? koboToNaira(fum) : null,
+        canViewAum: showAum,
         users,
         pendingKyc,
         pendingWithdrawals,
         interestAccrued: 0,
         interestPayable: 0,
         recentAudit,
-        breakdown: {
-          wallet: koboToNaira(wallets._sum.balanceKobo ?? 0n),
-          call: koboToNaira(call._sum.balanceKobo ?? 0n),
-          placements: koboToNaira(placements._sum.principalKobo ?? 0n),
-        },
+        breakdown: showAum
+          ? {
+              wallet: koboToNaira(wallets._sum.balanceKobo ?? 0n),
+              call: koboToNaira(call._sum.balanceKobo ?? 0n),
+              placements: koboToNaira(placements._sum.principalKobo ?? 0n),
+            }
+          : null,
       },
     });
   }),
@@ -223,6 +204,8 @@ adminRouter.get(
           email: u.email,
           phone: u.phone,
           name: `${u.firstName} ${u.surname}`,
+          accountType: u.accountType,
+          businessName: u.businessName,
           kycTier: u.kycTier,
           frozen: u.frozen,
           createdAt: u.createdAt,
@@ -237,6 +220,94 @@ adminRouter.get(
         };
       }),
     });
+  }),
+);
+
+adminRouter.post(
+  "/users",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        accountType: z.enum(["PERSONAL", "BUSINESS"]).default("PERSONAL"),
+        email: z.string().email(),
+        phone: z.string().optional(),
+        firstName: z.string().min(1),
+        middleName: z.string().optional(),
+        surname: z.string().min(1),
+        businessName: z.string().optional(),
+        businessRcNumber: z.string().optional(),
+        password: z.string().min(8).optional(),
+        kycTier: z.enum(["TIER_0", "TIER_1", "TIER_2"]).optional(),
+      })
+      .parse(req.body);
+
+    if (body.accountType === "BUSINESS" && !body.businessName?.trim()) {
+      throw new AppError(400, "Business name is required", "BUSINESS_NAME_REQUIRED");
+    }
+
+    const email = body.email.toLowerCase().trim();
+    const existing = await prisma.user.findUnique({ where: { email } });
+    if (existing) throw new AppError(409, "Email already registered", "EMAIL_EXISTS");
+
+    const tempPassword = body.password ?? `Kp${nanoid(10)}!`;
+    const passwordHash = await hashSecret(tempPassword);
+    const user = await prisma.user.create({
+      data: {
+        email,
+        phone: body.phone?.trim() || null,
+        passwordHash,
+        firstName: body.firstName.trim(),
+        middleName: body.middleName?.trim(),
+        surname: body.surname.trim(),
+        accountType: body.accountType,
+        businessName: body.businessName?.trim() || null,
+        businessRcNumber: body.businessRcNumber?.trim() || null,
+        onboardedByAdminId: req.adminId,
+        kycTier: body.kycTier ?? "TIER_0",
+        referralCode: makeReferralCode(body.firstName),
+        consents: {
+          create: [
+            { docKey: "terms", version: "1.0" },
+            { docKey: "privacy", version: "1.0" },
+          ],
+        },
+        notificationPrefs: { create: {} },
+      },
+    });
+    await ensureUserWallet(user.id);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "user.admin_onboard",
+      entityType: "User",
+      entityId: user.id,
+      after: { accountType: body.accountType, email },
+    });
+    await sendWelcomeEmail({
+      to: email,
+      firstName: user.firstName,
+      tempPassword,
+      accountType: body.accountType,
+    }).catch((err) => console.warn("[welcome-email]", err));
+
+    res.status(201).json({
+      data: {
+        id: user.id,
+        email: user.email,
+        name: `${user.firstName} ${user.surname}`,
+        accountType: user.accountType,
+        tempPassword,
+      },
+    });
+  }),
+);
+
+adminRouter.get(
+  "/funnel/dropoffs",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const rows = await listSignupDropoffs(150);
+    res.json({ data: rows });
   }),
 );
 
@@ -263,6 +334,9 @@ adminRouter.get(
         middleName: user.middleName,
         surname: user.surname,
         name: `${user.firstName} ${user.surname}`,
+        accountType: user.accountType,
+        businessName: user.businessName,
+        businessRcNumber: user.businessRcNumber,
         kycTier: user.kycTier,
         frozen: user.frozen,
         createdAt: user.createdAt,
@@ -335,6 +409,169 @@ adminRouter.get(
         maturityDate: p.maturityDate,
         createdAt: p.createdAt,
       })),
+    });
+  }),
+);
+
+adminRouter.post(
+  "/users/:userId/placements",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const body = z
+      .object({
+        kind: z.enum(["FIXED", "CALL", "EXPLORE"]).default("FIXED"),
+        amount: z.number().positive(),
+        tenorDays: z.number().int().positive().optional(),
+        name: z.string().min(1).default("Admin placement"),
+        productId: z.string().optional(),
+        maturityInstruction: z.enum(["WALLET", "ROLLOVER", "PAYOUT"]).default("WALLET"),
+        debitWallet: z.boolean().default(true),
+      })
+      .parse(req.body);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
+    if (user.frozen) throw new AppError(403, "User is frozen", "USER_FROZEN");
+
+    const amountKobo = nairaToKobo(body.amount);
+    await ensureUserWallet(userId);
+
+    if (body.kind === "CALL") {
+      const { moveWalletToCall } = await import("../services/money.js");
+      await moveWalletToCall(userId, amountKobo, `admin-call-${nanoid(10)}`);
+      await writeAudit({
+        actorAdminId: req.adminId,
+        action: "placement.admin_call_deposit",
+        entityType: "User",
+        entityId: userId,
+        after: { amount: body.amount },
+      });
+      await notifyCustomer({
+        userId,
+        title: "Call Account funded",
+        body: `₦${body.amount.toLocaleString()} moved into Call Account by Kipit operations.`,
+        href: "/call-account",
+        emailKind: "investment",
+        amountNaira: body.amount,
+        emailDetail: "Call Account",
+      }).catch(() => undefined);
+      const call = await ensureUserCall(userId);
+      res.status(201).json({
+        data: { kind: "CALL", balance: koboToNaira(call.balanceKobo) },
+      });
+      return;
+    }
+
+    let rateBps = 0;
+    let tenorDays = body.tenorDays ?? 90;
+    let productId: string | null = body.productId ?? null;
+    let name = body.name;
+
+    if (body.kind === "EXPLORE") {
+      if (!body.productId) throw new AppError(400, "productId required", "PRODUCT_REQUIRED");
+      const product = await prisma.product.findUnique({ where: { id: body.productId } });
+      if (!product) throw new AppError(404, "Product not found", "NOT_FOUND");
+      rateBps = product.rateBps;
+      tenorDays = product.tenorDays;
+      productId = product.id;
+      name = product.name;
+    } else {
+      const bands = await prisma.rateBand.findMany();
+      const band = bands.find(
+        (b) => tenorDays >= b.minDays && (b.maxDays == null || tenorDays <= b.maxDays),
+      );
+      if (!band) throw new AppError(400, "No rate band for tenor", "RATE_BAND_MISSING");
+      rateBps = band.rateBps;
+    }
+
+    const placementTag = `placement_${nanoid(10)}`;
+    const placementAccount = await prisma.ledgerAccount.create({
+      data: {
+        userId,
+        type: "USER_PLACEMENT",
+        tag: placementTag,
+        currency: "NGN",
+        balanceKobo: 0n,
+      },
+    });
+
+    if (body.debitWallet) {
+      await debitWallet({
+        userId,
+        amountKobo,
+        kind: "PLACEMENT",
+        idempotencyKey: `admin-place-${nanoid(12)}`,
+        description: `Admin placement: ${name}`,
+        creditAccountId: placementAccount.id,
+      });
+    } else {
+      const suspense = await ensureSystemAccount("SYSTEM_SUSPENSE");
+      await creditWalletFrom({
+        userId,
+        amountKobo,
+        kind: "ADJUSTMENT",
+        idempotencyKey: `admin-seed-${nanoid(12)}`,
+        description: `Admin seed before placement: ${name}`,
+        debitAccountId: suspense.id,
+      });
+      await debitWallet({
+        userId,
+        amountKobo,
+        kind: "PLACEMENT",
+        idempotencyKey: `admin-place-${nanoid(12)}`,
+        description: `Admin placement: ${name}`,
+        creditAccountId: placementAccount.id,
+      });
+    }
+
+    const maturityDate = new Date();
+    maturityDate.setDate(maturityDate.getDate() + tenorDays);
+    const expectedInterest = interestForPeriod(amountKobo, rateBps, tenorDays);
+
+    const placement = await prisma.placement.create({
+      data: {
+        userId,
+        kind: body.kind === "EXPLORE" ? "EXPLORE" : "FIXED",
+        productId,
+        name,
+        principalKobo: amountKobo,
+        rateBps,
+        tenorDays,
+        maturityDate,
+        maturityInstruction: body.maturityInstruction,
+        ledgerAccountId: placementAccount.id,
+      },
+    });
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "placement.admin_create",
+      entityType: "Placement",
+      entityId: placement.id,
+      after: { amount: body.amount, kind: placement.kind },
+    });
+    await notifyCustomer({
+      userId,
+      title: "Investment confirmed",
+      body: `₦${body.amount.toLocaleString()} invested in ${name} by Kipit operations.`,
+      href: "/portfolio",
+      emailKind: "investment",
+      amountNaira: body.amount,
+      emailDetail: `${name} · ${tenorDays} days`,
+    }).catch(() => undefined);
+
+    res.status(201).json({
+      data: {
+        id: placement.id,
+        name: placement.name,
+        kind: placement.kind,
+        amount: body.amount,
+        ratePct: rateBps / 100,
+        tenorDays,
+        maturityDate: maturityDate.toISOString().slice(0, 10),
+        expectedInterest: koboToNaira(expectedInterest),
+      },
     });
   }),
 );
@@ -851,6 +1088,15 @@ adminRouter.patch(
 );
 
 adminRouter.get(
+  "/products/categories",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.productCategory.findMany({ orderBy: { sortOrder: "asc" } });
+    res.json({ data: rows.map((c) => ({ id: c.id, slug: c.slug, name: c.name })) });
+  }),
+);
+
+adminRouter.get(
   "/products",
   requireAdmin,
   asyncHandler(async (_req, res) => {
@@ -884,34 +1130,60 @@ adminRouter.post(
   asyncHandler(async (req: AdminRequest, res) => {
     const body = z
       .object({
-        categoryId: z.string(),
-        slug: z.string().min(2),
+        categoryId: z.string().optional(),
+        categoryName: z.string().optional(),
+        slug: z.string().min(2).optional(),
         name: z.string().min(2),
-        blurb: z.string().min(2),
+        blurb: z.string().min(2).optional(),
         description: z.string().optional(),
-        rateBps: z.number().int().positive(),
+        rateBps: z.number().int().positive().optional(),
+        ratePct: z.number().positive().optional(),
         tenorDays: z.number().int().positive(),
         minimum: z.number().positive(),
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
         issuer: z.string().optional(),
         largeTicket: z.boolean().optional(),
-        termsVersion: z.string().optional(),
       })
       .parse(req.body);
+
+    let categoryId = body.categoryId;
+    if (!categoryId) {
+      const name = body.categoryName?.trim() || "Fixed Income";
+      const catSlug = name.toLowerCase().replace(/[^a-z0-9]+/g, "-").replace(/^-|-$/g, "");
+      const cat = await prisma.productCategory.upsert({
+        where: { slug: catSlug },
+        create: { slug: catSlug, name, sortOrder: 99 },
+        update: {},
+      });
+      categoryId = cat.id;
+    }
+
+    const rateBps =
+      body.rateBps ??
+      (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+    if (rateBps == null) throw new AppError(400, "rateBps or ratePct required", "RATE_REQUIRED");
+
+    const slug =
+      body.slug?.trim() ||
+      `${body.name
+        .toLowerCase()
+        .replace(/[^a-z0-9]+/g, "-")
+        .replace(/^-|-$/g, "")
+        .slice(0, 48)}-${Date.now().toString(36).slice(-4)}`;
+
     const row = await prisma.product.create({
       data: {
-        categoryId: body.categoryId,
-        slug: body.slug,
+        categoryId,
+        slug,
         name: body.name,
-        blurb: body.blurb,
+        blurb: body.blurb ?? body.name,
         description: body.description,
-        rateBps: body.rateBps,
+        rateBps,
         tenorDays: body.tenorDays,
         minimumKobo: BigInt(Math.round(body.minimum * 100)),
-        availability: body.availability,
+        availability: body.availability ?? "OPEN",
         issuer: body.issuer,
         largeTicket: body.largeTicket ?? false,
-        termsVersion: body.termsVersion,
       },
       include: { category: true },
     });
@@ -921,7 +1193,17 @@ adminRouter.post(
       entityType: "Product",
       entityId: row.id,
     });
-    res.status(201).json({ data: row });
+    res.status(201).json({
+      data: {
+        id: row.id,
+        slug: row.slug,
+        name: row.name,
+        ratePct: row.rateBps / 100,
+        tenorDays: row.tenorDays,
+        minimum: koboToNaira(row.minimumKobo),
+        availability: row.availability,
+      },
+    });
   }),
 );
 
@@ -935,6 +1217,7 @@ adminRouter.patch(
         blurb: z.string().optional(),
         description: z.string().optional(),
         rateBps: z.number().int().positive().optional(),
+        ratePct: z.number().positive().optional(),
         tenorDays: z.number().int().positive().optional(),
         minimum: z.number().positive().optional(),
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
@@ -942,13 +1225,15 @@ adminRouter.patch(
         largeTicket: z.boolean().optional(),
       })
       .parse(req.body);
+    const rateBps =
+      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
     const row = await prisma.product.update({
       where: { id: String(req.params.id) },
       data: {
         name: body.name,
         blurb: body.blurb,
         description: body.description,
-        rateBps: body.rateBps,
+        rateBps,
         tenorDays: body.tenorDays,
         minimumKobo:
           body.minimum !== undefined ? BigInt(Math.round(body.minimum * 100)) : undefined,
@@ -964,7 +1249,16 @@ adminRouter.patch(
       entityType: "Product",
       entityId: row.id,
     });
-    res.json({ data: row });
+    res.json({
+      data: {
+        id: row.id,
+        name: row.name,
+        ratePct: row.rateBps / 100,
+        tenorDays: row.tenorDays,
+        minimum: koboToNaira(row.minimumKobo),
+        availability: row.availability,
+      },
+    });
   }),
 );
 

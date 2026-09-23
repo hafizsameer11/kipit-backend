@@ -209,6 +209,17 @@ investRouter.post(
       entityId: placement.id,
     });
 
+    const { notifyCustomer } = await import("../services/notify.js");
+    await notifyCustomer({
+      userId: req.userId!,
+      title: "Investment confirmed",
+      body: `₦${body.amount.toLocaleString()} invested in ${body.name}.`,
+      href: "/portfolio",
+      emailKind: "investment",
+      amountNaira: body.amount,
+      emailDetail: `${body.name} · ${body.tenorDays} days`,
+    }).catch(() => undefined);
+
     res.status(201).json({
       data: {
         id: placement.id,
