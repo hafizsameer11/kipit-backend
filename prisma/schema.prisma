@@ -49,6 +49,7 @@ enum OtpPurpose {
   LOGIN
   PASSWORD_RESET
   PIN_RESET
+  ADMIN_LOGIN
 }
 
 enum PlacementKind {
