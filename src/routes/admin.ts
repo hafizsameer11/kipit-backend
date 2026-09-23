@@ -1608,12 +1608,74 @@ adminRouter.patch(
 adminRouter.get(
   "/audit",
   requireAdmin,
-  asyncHandler(async (req, res) => {
+  asyncHandler(async (_req, res) => {
     const rows = await prisma.auditEvent.findMany({
       orderBy: { createdAt: "desc" },
       take: 200,
+      include: {
+        actorUser: { select: { id: true, email: true, firstName: true, surname: true } },
+      },
     });
-    res.json({ data: rows });
+
+    const adminIds = [
+      ...new Set(rows.map((r) => r.actorAdminId).filter((id): id is string => Boolean(id))),
+    ];
+    const userEntityIds = [
+      ...new Set(
+        rows
+          .filter((r) => r.entityType === "User" && r.entityId)
+          .map((r) => r.entityId as string),
+      ),
+    ];
+
+    const [admins, entityUsers] = await Promise.all([
+      adminIds.length
+        ? prisma.adminUser.findMany({
+            where: { id: { in: adminIds } },
+            select: { id: true, email: true, name: true, role: true },
+          })
+        : Promise.resolve([]),
+      userEntityIds.length
+        ? prisma.user.findMany({
+            where: { id: { in: userEntityIds } },
+            select: { id: true, email: true, firstName: true, surname: true },
+          })
+        : Promise.resolve([]),
+    ]);
+
+    const adminById = new Map(admins.map((a) => [a.id, a]));
+    const userById = new Map(entityUsers.map((u) => [u.id, u]));
+
+    res.json({
+      data: rows.map((r) => {
+        const admin = r.actorAdminId ? adminById.get(r.actorAdminId) : undefined;
+        const actorUser = r.actorUser;
+        const entityUser =
+          r.entityType === "User" && r.entityId ? userById.get(r.entityId) : undefined;
+        const actorEmail = admin?.email ?? actorUser?.email ?? null;
+        const actorName =
+          admin?.name ??
+          ([actorUser?.firstName, actorUser?.surname].filter(Boolean).join(" ") || null);
+        return {
+          id: r.id,
+          action: r.action,
+          entityType: r.entityType,
+          entityId: r.entityId,
+          actorAdminId: r.actorAdminId,
+          actorUserId: r.actorUserId,
+          actorEmail,
+          actorName,
+          actorRole: admin?.role ?? null,
+          entityEmail: entityUser?.email ?? null,
+          entityLabel:
+            entityUser?.email ??
+            (r.entityType && r.entityId ? `${r.entityType} · ${r.entityId.slice(0, 8)}` : null),
+          before: r.before,
+          after: r.after,
+          createdAt: r.createdAt,
+        };
+      }),
+    });
   }),
 );
 
