@@ -126,11 +126,15 @@ portfolioRouter.get(
       take: 200,
     });
 
-    // One row per journal entry; prefer the wallet line for amount/direction.
+    // One row per journal entry; prefer wallet line, else call (for Call interest).
     const byEntry = new Map<string, (typeof lines)[number]>();
     for (const line of lines) {
       const prev = byEntry.get(line.entryId);
-      if (!prev || line.account.type === "USER_WALLET") {
+      if (
+        !prev ||
+        line.account.type === "USER_WALLET" ||
+        (prev.account.type !== "USER_WALLET" && line.account.type === "USER_CALL")
+      ) {
         byEntry.set(line.entryId, line);
       }
     }
@@ -149,6 +153,7 @@ portfolioRouter.get(
           amount: koboToNaira(abs),
           // Positive ledger amount on a user asset account = money in.
           direction: l.amountKobo >= 0n ? ("credit" as const) : ("debit" as const),
+          accountType: l.account.type,
           createdAt: l.entry.createdAt.toISOString(),
         };
       });

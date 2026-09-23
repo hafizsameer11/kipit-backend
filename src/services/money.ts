@@ -65,6 +65,30 @@ export async function creditWalletFrom(input: {
   });
 }
 
+/** Credit Call Account from a system (or other) debit account — used for daily Call interest. */
+export async function creditCallFrom(input: {
+  userId: string;
+  amountKobo: bigint;
+  kind: JournalKind;
+  idempotencyKey: string;
+  description?: string;
+  debitAccountId: string;
+  metadata?: Prisma.InputJsonValue;
+}) {
+  if (input.amountKobo <= 0n) throw new AppError(400, "Amount must be positive", "INVALID_AMOUNT");
+  const call = await ensureUserCall(input.userId);
+  return postJournal({
+    kind: input.kind,
+    idempotencyKey: input.idempotencyKey,
+    description: input.description,
+    metadata: input.metadata,
+    lines: [
+      { accountId: call.id, amountKobo: input.amountKobo },
+      { accountId: input.debitAccountId, amountKobo: -input.amountKobo },
+    ],
+  });
+}
+
 export async function moveWalletToCall(userId: string, amountKobo: bigint, idempotencyKey: string) {
   const call = await ensureUserCall(userId);
   return debitWallet({

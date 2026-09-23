@@ -50,7 +50,22 @@ meRouter.get(
           balance: koboToNaira(total),
           balanceKobo: total.toString(),
         },
-        interestThisWeek: 0,
+        interestThisWeek: await (async () => {
+          const weekAgo = new Date();
+          weekAgo.setDate(weekAgo.getDate() - 7);
+          const callAcct = await ensureUserCall(user.id);
+          const interestLines = await prisma.journalLine.findMany({
+            where: {
+              accountId: callAcct.id,
+              amountKobo: { gt: 0 },
+              createdAt: { gte: weekAgo },
+              entry: { kind: "INTEREST" },
+            },
+            select: { amountKobo: true },
+          });
+          const sum = interestLines.reduce((s, l) => s + l.amountKobo, 0n);
+          return koboToNaira(sum);
+        })(),
         nextMaturity: next?.maturityDate
           ? {
               id: next.id,
