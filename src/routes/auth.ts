@@ -53,6 +53,11 @@ authRouter.post(
         referralCode: z.string().optional(),
         biometricsLogin: z.boolean().optional(),
         biometricsTxn: z.boolean().optional(),
+        dateOfBirth: z
+          .string()
+          .regex(/^\d{4}-\d{2}-\d{2}$/)
+          .optional(),
+        phone: z.string().min(7).max(20).optional(),
       })
       .parse(req.body);
 

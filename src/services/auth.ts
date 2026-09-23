@@ -105,6 +105,8 @@ export async function registerUser(input: {
   referralCode?: string;
   biometricsLogin?: boolean;
   biometricsTxn?: boolean;
+  dateOfBirth?: string;
+  phone?: string;
   ipAddress?: string;
   userAgent?: string;
 }) {
@@ -120,6 +122,8 @@ export async function registerUser(input: {
       firstName: input.firstName.trim(),
       middleName: input.middleName?.trim(),
       surname: input.surname.trim(),
+      phone: input.phone?.trim() || null,
+      dateOfBirth: input.dateOfBirth ? new Date(input.dateOfBirth) : null,
       referralCode: makeReferralCode(input.firstName),
       referredBy: input.referralCode?.trim() || null,
       biometricsLogin: input.biometricsLogin ?? false,
