@@ -2,6 +2,7 @@ import express from "express";
 import cors from "cors";
 import helmet from "helmet";
 import morgan from "morgan";
+import path from "node:path";
 import { errorHandler, AppError, asyncHandler } from "./lib/errors.js";
 import { authRouter } from "./routes/auth.js";
 import { walletRouter } from "./routes/wallet.js";
@@ -49,8 +50,22 @@ export function createApp() {
     webhooksRouter,
   );
 
-  app.use(express.json({ limit: "2mb" }));
+  app.use(express.json({ limit: "12mb" }));
   app.use(morgan(process.env.NODE_ENV === "production" ? "combined" : "dev"));
+
+  // KYC document files (opaque paths under uploads/kyc/…).
+  // Cross-origin: helmet defaults are fine; CORS already allows reading from the app.
+  app.use(
+    "/uploads",
+    express.static(path.resolve(process.cwd(), "uploads"), {
+      fallthrough: true,
+      maxAge: "7d",
+      setHeaders(res) {
+        res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("Cache-Control", "private, max-age=604800");
+      },
+    }),
+  );
 
   app.get("/health", (_req, res) => {
     res.json({
