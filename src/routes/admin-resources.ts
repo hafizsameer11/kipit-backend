@@ -408,26 +408,51 @@ adminResourcesRouter.patch(
       .object({
         status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]).optional(),
         adminNote: z.string().optional(),
+        reply: z.string().min(1).max(4000).optional(),
       })
       .parse(req.body);
     const existing = await prisma.supportTicket.findUnique({ where: { id: String(req.params.id) } });
     if (!existing) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+
+    const replyText = (body.reply ?? body.adminNote)?.trim();
+    if (replyText) {
+      const count = await prisma.supportTicketMessage.count({ where: { ticketId: existing.id } });
+      if (count === 0) {
+        await prisma.supportTicketMessage.create({
+          data: {
+            ticketId: existing.id,
+            author: "USER",
+            body: existing.body,
+            createdAt: existing.createdAt,
+          },
+        });
+      }
+      await prisma.supportTicketMessage.create({
+        data: { ticketId: existing.id, author: "SUPPORT", body: replyText },
+      });
+      await prisma.notification.create({
+        data: {
+          userId: existing.userId,
+          title: "Support replied",
+          body: `New reply on “${existing.subject}”.`,
+          href: `/settings/help/tickets/${existing.id}`,
+        },
+      });
+    }
+
     const row = await prisma.supportTicket.update({
       where: { id: existing.id },
       data: {
-        status: body.status,
-        body: body.adminNote
-          ? `${existing.body}\n\n— Admin note —\n${body.adminNote}`
-          : undefined,
+        status: body.status ?? (replyText ? "IN_PROGRESS" : undefined),
       },
-      include: { user: true },
+      include: { user: true, messages: { orderBy: { createdAt: "asc" } } },
     });
     await writeAudit({
       actorAdminId: req.adminId,
       action: "support.ticket.updated",
       entityType: "SupportTicket",
       entityId: row.id,
-      after: { status: row.status },
+      after: { status: row.status, replied: Boolean(replyText) },
     });
     res.json({
       data: {
@@ -435,6 +460,12 @@ adminResourcesRouter.patch(
         status: row.status,
         subject: row.subject,
         body: row.body,
+        messages: row.messages.map((m) => ({
+          id: m.id,
+          author: m.author,
+          body: m.body,
+          createdAt: m.createdAt,
+        })),
         user: { id: row.userId, name: `${row.user.firstName} ${row.user.surname}` },
       },
     });
