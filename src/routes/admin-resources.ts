@@ -802,18 +802,196 @@ adminResourcesRouter.get(
     const rows = await prisma.chatSession.findMany({
       include: {
         user: true,
+        _count: { select: { messages: true } },
         messages: { orderBy: { createdAt: "desc" }, take: 1 },
       },
       orderBy: { createdAt: "desc" },
-      take: 100,
+      take: 200,
     });
+    const firstUserMsgs = await prisma.chatMessage.findMany({
+      where: {
+        role: "user",
+        sessionId: { in: rows.map((s) => s.id) },
+      },
+      orderBy: { createdAt: "asc" },
+      distinct: ["sessionId"],
+      select: { sessionId: true, content: true },
+    });
+    const firstBySession = new Map(firstUserMsgs.map((m) => [m.sessionId, m.content]));
     res.json({
       data: rows.map((s) => ({
         id: s.id,
-        user: { id: s.userId, name: `${s.user.firstName} ${s.user.surname}`, email: s.user.email },
+        user: {
+          id: s.userId,
+          name: `${s.user.firstName} ${s.user.surname}`,
+          email: s.user.email,
+        },
         createdAt: s.createdAt,
+        messageCount: s._count.messages,
+        firstUserMessage: firstBySession.get(s.id) ?? null,
         lastMessage: s.messages[0]?.content ?? null,
       })),
+    });
+  }),
+);
+
+adminResourcesRouter.get(
+  "/chat/analytics",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const now = new Date();
+    const start30 = new Date(now);
+    start30.setDate(start30.getDate() - 30);
+    start30.setHours(0, 0, 0, 0);
+    const start14 = new Date(now);
+    start14.setDate(start14.getDate() - 13);
+    start14.setHours(0, 0, 0, 0);
+    const startToday = new Date(now);
+    startToday.setHours(0, 0, 0, 0);
+
+    const sessions = await prisma.chatSession.findMany({
+      where: { createdAt: { gte: start30 } },
+      include: {
+        messages: { orderBy: { createdAt: "asc" }, select: { role: true, content: true, createdAt: true } },
+        user: { select: { id: true } },
+      },
+      orderBy: { createdAt: "asc" },
+    });
+
+    const classifyIntent = (text: string): string => {
+      const t = text.toLowerCase();
+      if (/balance|portfolio|how much|wallet|holdings/.test(t)) return "balance";
+      if (/rate|product|fixed|explore|invest|90 day|call account/.test(t)) return "product";
+      if (/what is|explain|how does|mean/.test(t)) return "explain";
+      if (/matur|payout|when does/.test(t)) return "maturity";
+      if (/withdraw|transaction|transfer|status|where is/.test(t)) return "transaction";
+      if (/add money|fund|deposit|virtual account|card/.test(t)) return "funding";
+      return "unsupported";
+    };
+
+    const classifyOutcome = (msgs: { role: string; content: string }[]): string => {
+      if (msgs.length <= 2) return "abandoned";
+      const joined = msgs.map((m) => m.content).join(" ").toLowerCase();
+      if (/ticket|escalat|unacceptable|support/.test(joined)) return "escalated";
+      if (/set it up|open|continue|invest for me|handoff|secure/.test(joined)) return "handoff";
+      return "resolved";
+    };
+
+    const intentCounts: Record<string, number> = {};
+    const questionCounts = new Map<string, { asked: number; resolved: number }>();
+    const handoffCounts = new Map<string, number>();
+    const volumeMap = new Map<string, { resolved: number; handoff: number; abandoned: number; escalated: number }>();
+    let messages30d = 0;
+    let flagged = 0;
+    let turnSum = 0;
+    const users = new Set<string>();
+
+    for (const s of sessions) {
+      users.add(s.userId);
+      messages30d += s.messages.length;
+      turnSum += s.messages.length;
+      const firstUser = s.messages.find((m) => m.role === "user")?.content ?? "";
+      const intent = classifyIntent(firstUser);
+      intentCounts[intent] = (intentCounts[intent] ?? 0) + 1;
+      const outcome = classifyOutcome(s.messages);
+      if (outcome === "escalated") flagged += 1;
+      if (outcome === "handoff") {
+        const label =
+          /fixed|90|plan/.test(firstUser.toLowerCase())
+            ? "Fixed plan setup"
+            : /fund|add money|deposit/.test(firstUser.toLowerCase())
+              ? "Add money / funding"
+              : /explore|product/.test(firstUser.toLowerCase())
+                ? "Explore product detail"
+                : /withdraw/.test(firstUser.toLowerCase())
+                  ? "Withdrawal request"
+                  : "Secure journey";
+        handoffCounts.set(label, (handoffCounts.get(label) ?? 0) + 1);
+      }
+      if (firstUser.trim()) {
+        const key = firstUser.trim().slice(0, 80);
+        const prev = questionCounts.get(key) ?? { asked: 0, resolved: 0 };
+        prev.asked += 1;
+        if (outcome === "resolved") prev.resolved += 1;
+        questionCounts.set(key, prev);
+      }
+
+      const dayKey = s.createdAt.toISOString().slice(0, 10);
+      if (s.createdAt >= start14) {
+        const bucket = volumeMap.get(dayKey) ?? {
+          resolved: 0,
+          handoff: 0,
+          abandoned: 0,
+          escalated: 0,
+        };
+        if (outcome === "resolved") bucket.resolved += 1;
+        else if (outcome === "handoff") bucket.handoff += 1;
+        else if (outcome === "escalated") bucket.escalated += 1;
+        else bucket.abandoned += 1;
+        volumeMap.set(dayKey, bucket);
+      }
+    }
+
+    const sessionsToday = sessions.filter((s) => s.createdAt >= startToday).length;
+    const resolved = sessions.filter((s) => classifyOutcome(s.messages) === "resolved").length;
+    const handoffs = sessions.filter((s) => classifyOutcome(s.messages) === "handoff").length;
+    const containmentPct = sessions.length
+      ? Math.round((resolved / sessions.length) * 100)
+      : 0;
+    const handoffPct = sessions.length ? Math.round((handoffs / sessions.length) * 100) : 0;
+
+    const volume: { day: string; resolved: number; handoff: number; abandoned: number }[] = [];
+    for (let i = 0; i < 14; i++) {
+      const d = new Date(start14);
+      d.setDate(start14.getDate() + i);
+      const key = d.toISOString().slice(0, 10);
+      const bucket = volumeMap.get(key) ?? { resolved: 0, handoff: 0, abandoned: 0, escalated: 0 };
+      volume.push({
+        day: d.toLocaleDateString("en-GB", { day: "2-digit", month: "short" }),
+        resolved: bucket.resolved,
+        handoff: bucket.handoff + bucket.escalated,
+        abandoned: bucket.abandoned,
+      });
+    }
+
+    const intentOrder = [
+      "balance",
+      "product",
+      "explain",
+      "maturity",
+      "transaction",
+      "funding",
+      "unsupported",
+    ];
+
+    res.json({
+      data: {
+        sessions30d: sessions.length,
+        sessionsToday,
+        activeUsers30d: users.size,
+        messages30d,
+        avgTurns: sessions.length ? (turnSum / sessions.length).toFixed(1) : "0",
+        containment: `${containmentPct}%`,
+        handoffRate: `${handoffPct}%`,
+        flagged,
+        avgResponse: "—",
+        volume,
+        intentMix: intentOrder.map((intent) => ({
+          intent,
+          sessions: intentCounts[intent] ?? 0,
+        })),
+        topQuestions: [...questionCounts.entries()]
+          .sort((a, b) => b[1].asked - a[1].asked)
+          .slice(0, 8)
+          .map(([text, v]) => ({
+            text,
+            asked: v.asked,
+            resolvedPct: v.asked ? Math.round((v.resolved / v.asked) * 100) : 0,
+          })),
+        handoffs: [...handoffCounts.entries()]
+          .sort((a, b) => b[1] - a[1])
+          .map(([label, count]) => ({ label, count })),
+      },
     });
   }),
 );
@@ -1492,6 +1670,57 @@ adminResourcesRouter.get(
         .map(([product, value]) => ({ product, value: koboToNaira(value) }))
         .sort((a, b) => b.value - a.value)
         .slice(0, 8),
+    });
+  }),
+);
+
+adminResourcesRouter.get(
+  "/referrals/stats",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const [invited, totalUsers, leaders] = await Promise.all([
+      prisma.user.count({ where: { referredBy: { not: null } } }),
+      prisma.user.count(),
+      prisma.user.groupBy({
+        by: ["referredBy"],
+        where: { referredBy: { not: null } },
+        _count: { _all: true },
+        orderBy: { _count: { referredBy: "desc" } },
+        take: 10,
+      }),
+    ]);
+
+    const codes = leaders
+      .map((l) => l.referredBy)
+      .filter((c): c is string => Boolean(c));
+    const inviters = codes.length
+      ? await prisma.user.findMany({
+          where: { referralCode: { in: codes } },
+          select: { referralCode: true, firstName: true, surname: true, email: true },
+        })
+      : [];
+    const inviterByCode = new Map(inviters.map((u) => [u.referralCode, u]));
+
+    res.json({
+      data: {
+        invitesSent: invited,
+        invitesQualified: invited,
+        rewardsPaid: 0,
+        pendingApproval: 0,
+        totalUsers,
+        leaders: leaders.map((l) => {
+          const inviter = l.referredBy ? inviterByCode.get(l.referredBy) : undefined;
+          return {
+            name: inviter
+              ? `${inviter.firstName} ${inviter.surname}`.trim()
+              : l.referredBy || "—",
+            email: inviter?.email ?? null,
+            invites: l._count._all,
+            qualified: l._count._all,
+            rewarded: 0,
+          };
+        }),
+      },
     });
   }),
 );
