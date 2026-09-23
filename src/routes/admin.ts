@@ -597,6 +597,28 @@ adminRouter.get(
   }),
 );
 
+adminRouter.post(
+  "/users/:userId/sessions/:sessionId/revoke",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const sessionId = String(req.params.sessionId);
+    const result = await prisma.session.updateMany({
+      where: { id: sessionId, userId, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    if (result.count === 0) throw new AppError(404, "Session not found", "NOT_FOUND");
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "user.session.revoked",
+      entityType: "Session",
+      entityId: sessionId,
+      after: { userId },
+    });
+    res.json({ data: { id: sessionId, revoked: true } });
+  }),
+);
+
 adminRouter.patch(
   "/users/:userId/frozen",
   requireAdmin,
@@ -1054,26 +1076,56 @@ adminRouter.patch(
       .object({
         status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]).optional(),
         adminNote: z.string().optional(),
+        reply: z.string().min(1).max(4000).optional(),
+        assignee: z.string().optional(),
       })
       .parse(req.body);
     const existing = await prisma.supportTicket.findUnique({ where: { id: String(req.params.id) } });
     if (!existing) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+
+    const replyText = (body.reply ?? body.adminNote)?.trim();
+    if (replyText) {
+      const count = await prisma.supportTicketMessage.count({ where: { ticketId: existing.id } });
+      if (count === 0) {
+        await prisma.supportTicketMessage.create({
+          data: {
+            ticketId: existing.id,
+            author: "USER",
+            body: existing.body,
+            createdAt: existing.createdAt,
+          },
+        });
+      }
+      await prisma.supportTicketMessage.create({
+        data: { ticketId: existing.id, author: "SUPPORT", body: replyText },
+      });
+      await prisma.notification.create({
+        data: {
+          userId: existing.userId,
+          title: "Support replied",
+          body: `New reply on “${existing.subject}”.`,
+          href: `/settings/help/tickets/${existing.id}`,
+        },
+      });
+    }
+
     const row = await prisma.supportTicket.update({
       where: { id: existing.id },
       data: {
-        status: body.status,
-        body: body.adminNote
-          ? `${existing.body}\n\n— Admin note —\n${body.adminNote}`
-          : undefined,
+        status: body.status ?? (replyText ? "IN_PROGRESS" : undefined),
       },
-      include: { user: true },
+      include: { user: true, messages: { orderBy: { createdAt: "asc" } } },
     });
     await writeAudit({
       actorAdminId: req.adminId,
       action: "support.ticket.updated",
       entityType: "SupportTicket",
       entityId: row.id,
-      after: { status: row.status, adminNote: body.adminNote },
+      after: {
+        status: row.status,
+        replied: Boolean(replyText),
+        assignee: body.assignee,
+      },
     });
     res.json({
       data: {
@@ -1081,6 +1133,7 @@ adminRouter.patch(
         status: row.status,
         subject: row.subject,
         body: row.body,
+        messages: row.messages,
         user: { id: row.userId, name: `${row.user.firstName} ${row.user.surname}` },
       },
     });
@@ -1354,10 +1407,11 @@ adminRouter.post(
         email: z.string().email(),
         name: z.string().min(2),
         role: adminRoleSchema,
-        password: z.string().min(8),
+        password: z.string().min(8).optional(),
       })
       .parse(req.body);
-    const passwordHash = await hashSecret(body.password);
+    const tempPassword = body.password ?? `Kp${nanoid(10)}!`;
+    const passwordHash = await hashSecret(tempPassword);
     const row = await prisma.adminUser.create({
       data: {
         email: body.email.toLowerCase(),
@@ -1373,7 +1427,14 @@ adminRouter.post(
       entityId: row.id,
     });
     res.status(201).json({
-      data: { id: row.id, email: row.email, name: row.name, role: row.role, active: row.active },
+      data: {
+        id: row.id,
+        email: row.email,
+        name: row.name,
+        role: row.role,
+        active: row.active,
+        tempPassword,
+      },
     });
   }),
 );

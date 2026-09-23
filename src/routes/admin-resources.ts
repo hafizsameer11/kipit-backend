@@ -9,12 +9,21 @@ import { z } from "zod";
 import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
-import { hashSecret, koboToNaira } from "../lib/crypto.js";
+import { hashSecret, koboToNaira, nairaToKobo } from "../lib/crypto.js";
 import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
+import {
+  getConfigJson,
+  setConfigJson,
+  type StoredAdjustment,
+  type StoredAmlAlert,
+  type StoredCampaign,
+  type StoredReconRecord,
+} from "../services/admin-ops-store.js";
+import { nanoid } from "nanoid";
 
-type AdminRequest = Request & { adminId?: string; adminRole?: string };
+type AdminRequest = Request & { adminId?: string; adminRole?: string; adminName?: string };
 
 async function requireAdmin(req: AdminRequest, _res: Response, next: NextFunction) {
   try {
@@ -40,6 +49,7 @@ async function requireAdmin(req: AdminRequest, _res: Response, next: NextFunctio
     }
     req.adminId = admin.id;
     req.adminRole = admin.role;
+    req.adminName = admin.name;
     next();
   } catch (err) {
     next(err instanceof AppError ? err : new AppError(401, "Unauthorized", "UNAUTHORIZED"));
@@ -837,12 +847,108 @@ adminResourcesRouter.get(
   }),
 );
 
-/** Domains without dedicated tables yet — empty stubs. */
+/** Ops stores for domains without dedicated tables — persisted in AppConfig. */
 adminResourcesRouter.get(
   "/aml/alerts",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    res.json({ data: [] });
+    const alerts = await getConfigJson<StoredAmlAlert[]>("admin.aml.alerts", []);
+    res.json({
+      data: alerts.map((a) => ({
+        id: a.id,
+        userId: a.userId ?? "unknown",
+        name: a.customerName,
+        type: a.rule,
+        status:
+          a.status === "cleared"
+            ? "cleared"
+            : a.status === "str_filed"
+              ? "reported"
+              : a.status === "escalated"
+                ? "investigating"
+                : "open",
+        raised: a.createdAt,
+        score: a.severity === "high" ? 92 : a.severity === "medium" ? 71 : 48,
+        summary: a.rule,
+        matchedAgainst: a.rule,
+        analyst: a.assignee ?? "Unassigned",
+        notes: a.notes.map((n) => ({ at: n.at, actor: n.author, text: n.body })),
+      })),
+    });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/aml/alerts",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        customerName: z.string().min(1),
+        email: z.string().optional(),
+        userId: z.string().optional(),
+        rule: z.string().min(1),
+        severity: z.enum(["low", "medium", "high"]).default("medium"),
+        amount: z.number().optional(),
+      })
+      .parse(req.body);
+    const alerts = await getConfigJson<StoredAmlAlert[]>("admin.aml.alerts", []);
+    const now = new Date().toISOString();
+    const row: StoredAmlAlert = {
+      id: `aml_${nanoid(10)}`,
+      userId: body.userId,
+      customerName: body.customerName,
+      email: body.email,
+      rule: body.rule,
+      severity: body.severity,
+      status: "open",
+      amount: body.amount,
+      notes: [],
+      assignee: null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    alerts.unshift(row);
+    await setConfigJson("admin.aml.alerts", alerts, req.adminId);
+    res.status(201).json({ data: row });
+  }),
+);
+
+adminResourcesRouter.patch(
+  "/aml/alerts/:id",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        status: z.enum(["open", "cleared", "escalated", "str_filed"]).optional(),
+        note: z.string().optional(),
+        assignee: z.string().nullable().optional(),
+      })
+      .parse(req.body);
+    const alerts = await getConfigJson<StoredAmlAlert[]>("admin.aml.alerts", []);
+    const idx = alerts.findIndex((a) => a.id === String(req.params.id));
+    if (idx < 0) throw new AppError(404, "Alert not found", "NOT_FOUND");
+    const row = alerts[idx]!;
+    if (body.status) row.status = body.status;
+    if (body.assignee !== undefined) row.assignee = body.assignee;
+    if (body.note?.trim()) {
+      row.notes.push({
+        at: new Date().toISOString(),
+        author: req.adminName || "Admin",
+        body: body.note.trim(),
+      });
+    }
+    row.updatedAt = new Date().toISOString();
+    alerts[idx] = row;
+    await setConfigJson("admin.aml.alerts", alerts, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "aml.alert.updated",
+      entityType: "AmlAlert",
+      entityId: row.id,
+      after: body,
+    });
+    res.json({ data: row });
   }),
 );
 
@@ -850,7 +956,91 @@ adminResourcesRouter.get(
   "/recon",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    res.json({ data: [] });
+    const records = await getConfigJson<StoredReconRecord[]>("admin.recon.records", []);
+    res.json({
+      data: records.map((r) => ({
+        id: r.id,
+        providerRef: r.reference,
+        internalRef: r.id,
+        source: r.source,
+        customer: r.customerName,
+        providerAmount: r.variance,
+        ledgerAmount: 0,
+        date: r.createdAt.slice(0, 10),
+        status: r.status,
+        channel: r.source,
+        note: r.notes.at(-1)?.body,
+        owner: undefined,
+        timeline: r.notes.map((n) => ({ label: n.body, at: n.at, by: n.author })),
+      })),
+    });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/recon",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        reference: z.string().min(1),
+        customerName: z.string().min(1),
+        source: z.string().min(1),
+        variance: z.number(),
+      })
+      .parse(req.body);
+    const records = await getConfigJson<StoredReconRecord[]>("admin.recon.records", []);
+    const now = new Date().toISOString();
+    const row: StoredReconRecord = {
+      id: `rec_${nanoid(10)}`,
+      reference: body.reference,
+      customerName: body.customerName,
+      source: body.source,
+      variance: body.variance,
+      status: "open",
+      notes: [],
+      createdAt: now,
+      updatedAt: now,
+    };
+    records.unshift(row);
+    await setConfigJson("admin.recon.records", records, req.adminId);
+    res.status(201).json({ data: row });
+  }),
+);
+
+adminResourcesRouter.patch(
+  "/recon/:id",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        status: z.enum(["open", "investigating", "resolved"]).optional(),
+        note: z.string().optional(),
+      })
+      .parse(req.body);
+    const records = await getConfigJson<StoredReconRecord[]>("admin.recon.records", []);
+    const idx = records.findIndex((r) => r.id === String(req.params.id));
+    if (idx < 0) throw new AppError(404, "Record not found", "NOT_FOUND");
+    const row = records[idx]!;
+    if (body.status) row.status = body.status;
+    if (body.note?.trim()) {
+      row.notes.push({
+        at: new Date().toISOString(),
+        author: req.adminName || "Admin",
+        body: body.note.trim(),
+      });
+    }
+    row.updatedAt = new Date().toISOString();
+    records[idx] = row;
+    await setConfigJson("admin.recon.records", records, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "recon.updated",
+      entityType: "ReconRecord",
+      entityId: row.id,
+      after: body,
+    });
+    res.json({ data: row });
   }),
 );
 
@@ -858,7 +1048,87 @@ adminResourcesRouter.get(
   "/campaigns",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    res.json({ data: [] });
+    const campaigns = await getConfigJson<StoredCampaign[]>("admin.campaigns", []);
+    res.json({
+      data: campaigns.map((c) => ({
+        id: c.id,
+        name: c.name,
+        channel: c.channel,
+        status: c.status === "sending" ? "scheduled" : c.status,
+        audience: c.audience,
+        reach: 0,
+        title: c.subject,
+        content: c.body,
+        cta: "Open Kipit",
+        deepLink: "/invest",
+        scheduledFor: c.scheduledAt ?? undefined,
+        createdBy: "Admin",
+      })),
+    });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/campaigns",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        name: z.string().min(1),
+        channel: z.string().default("push"),
+        audience: z.string().default("All customers"),
+        subject: z.string().min(1),
+        body: z.string().min(1),
+        status: z.enum(["draft", "scheduled", "sending", "sent", "paused"]).default("draft"),
+        scheduledAt: z.string().nullable().optional(),
+      })
+      .parse(req.body);
+    const campaigns = await getConfigJson<StoredCampaign[]>("admin.campaigns", []);
+    const now = new Date().toISOString();
+    const row: StoredCampaign = {
+      id: `cmp_${nanoid(10)}`,
+      name: body.name,
+      channel: body.channel,
+      status: body.status,
+      audience: body.audience,
+      subject: body.subject,
+      body: body.body,
+      scheduledAt: body.scheduledAt ?? null,
+      createdAt: now,
+      updatedAt: now,
+    };
+    campaigns.unshift(row);
+    await setConfigJson("admin.campaigns", campaigns, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "campaign.created",
+      entityType: "Campaign",
+      entityId: row.id,
+    });
+    res.status(201).json({ data: row });
+  }),
+);
+
+adminResourcesRouter.patch(
+  "/campaigns/:id",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        name: z.string().optional(),
+        status: z.enum(["draft", "scheduled", "sending", "sent", "paused"]).optional(),
+        subject: z.string().optional(),
+        body: z.string().optional(),
+        scheduledAt: z.string().nullable().optional(),
+      })
+      .parse(req.body);
+    const campaigns = await getConfigJson<StoredCampaign[]>("admin.campaigns", []);
+    const idx = campaigns.findIndex((c) => c.id === String(req.params.id));
+    if (idx < 0) throw new AppError(404, "Campaign not found", "NOT_FOUND");
+    const row = { ...campaigns[idx]!, ...body, updatedAt: new Date().toISOString() };
+    campaigns[idx] = row;
+    await setConfigJson("admin.campaigns", campaigns, req.adminId);
+    res.json({ data: row });
   }),
 );
 
@@ -866,7 +1136,147 @@ adminResourcesRouter.get(
   "/adjustments",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    res.json({ data: { requests: [], investments: [] } });
+    const requests = await getConfigJson<StoredAdjustment[]>("admin.adjustments", []);
+    const placements = await prisma.placement.findMany({
+      where: { status: "ACTIVE" },
+      include: { user: true },
+      take: 100,
+      orderBy: { createdAt: "desc" },
+    });
+    res.json({
+      data: {
+        requests: requests.map((r) => ({
+          id: r.id,
+          investmentId: r.placementId,
+          userName: r.customerName,
+          product: r.product,
+          reference: r.placementId,
+          type: r.type === "maturity" ? "maturity-date" : r.type,
+          previous: r.fromValue,
+          proposed: r.toValue,
+          reason: r.reason,
+          submittedBy: r.maker,
+          submittedAt: r.createdAt,
+          status:
+            r.status === "pending" ? "awaiting" : r.status === "approved" ? "approved" : "rejected",
+          impact: `${r.type}: ${r.fromValue} → ${r.toValue}`,
+          decidedAt: r.decidedAt ?? undefined,
+          decisionNote: r.decisionNote ?? undefined,
+        })),
+        investments: placements.map((p) => ({
+          id: p.id,
+          userId: p.userId,
+          userName: `${p.user.firstName} ${p.user.surname}`,
+          userEmail: p.user.email ?? "",
+          product: p.name,
+          reference: p.id,
+          principal: koboToNaira(p.principalKobo),
+          rate: p.rateBps / 100,
+          tenorDays: p.tenorDays ?? 0,
+          startDate: p.startDate.toISOString().slice(0, 10),
+          maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? "",
+          payoutFrequency: "At maturity",
+          status: p.status,
+        })),
+      },
+    });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/adjustments",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        placementId: z.string().min(1),
+        type: z.enum(["principal", "rate", "tenor", "maturity"]),
+        toValue: z.string().min(1),
+        reason: z.string().min(4),
+      })
+      .parse(req.body);
+    const placement = await prisma.placement.findUnique({
+      where: { id: body.placementId },
+      include: { user: true },
+    });
+    if (!placement) throw new AppError(404, "Placement not found", "NOT_FOUND");
+    const fromValue =
+      body.type === "principal"
+        ? String(koboToNaira(placement.principalKobo))
+        : body.type === "rate"
+          ? String(placement.rateBps / 100)
+          : body.type === "tenor"
+            ? String(placement.tenorDays ?? "")
+            : placement.maturityDate?.toISOString().slice(0, 10) ?? "";
+    const requests = await getConfigJson<StoredAdjustment[]>("admin.adjustments", []);
+    const row: StoredAdjustment = {
+      id: `adj_${nanoid(10)}`,
+      placementId: placement.id,
+      customerName: `${placement.user.firstName} ${placement.user.surname}`,
+      product: placement.name,
+      type: body.type,
+      fromValue,
+      toValue: body.toValue,
+      reason: body.reason,
+      status: "pending",
+      maker: req.adminName || "Admin",
+      createdAt: new Date().toISOString(),
+    };
+    requests.unshift(row);
+    await setConfigJson("admin.adjustments", requests, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "adjustment.submitted",
+      entityType: "Adjustment",
+      entityId: row.id,
+    });
+    res.status(201).json({ data: row });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/adjustments/:id/decide",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        approve: z.boolean(),
+        note: z.string().optional(),
+      })
+      .parse(req.body);
+    const requests = await getConfigJson<StoredAdjustment[]>("admin.adjustments", []);
+    const idx = requests.findIndex((r) => r.id === String(req.params.id));
+    if (idx < 0) throw new AppError(404, "Adjustment not found", "NOT_FOUND");
+    const row = requests[idx]!;
+    if (row.status !== "pending") throw new AppError(400, "Already decided", "ALREADY_DECIDED");
+    row.status = body.approve ? "approved" : "rejected";
+    row.decidedAt = new Date().toISOString();
+    row.decisionNote = body.note ?? null;
+
+    if (body.approve) {
+      const data: {
+        principalKobo?: bigint;
+        rateBps?: number;
+        tenorDays?: number;
+        maturityDate?: Date;
+      } = {};
+      if (row.type === "principal") data.principalKobo = nairaToKobo(Number(row.toValue));
+      if (row.type === "rate") data.rateBps = Math.round(Number(row.toValue) * 100);
+      if (row.type === "tenor") data.tenorDays = Number(row.toValue);
+      if (row.type === "maturity") data.maturityDate = new Date(row.toValue);
+      await prisma.placement.update({ where: { id: row.placementId }, data });
+    }
+
+    requests[idx] = row;
+    await setConfigJson("admin.adjustments", requests, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: body.approve ? "adjustment.approved" : "adjustment.rejected",
+      entityType: "Adjustment",
+      entityId: row.id,
+      after: body,
+    });
+    res.json({ data: row });
   }),
 );
 
