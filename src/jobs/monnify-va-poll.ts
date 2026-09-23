@@ -128,19 +128,19 @@ async function reconcileUserPendingIntents(input: {
   providerRef: string;
 }) {
   const cutoff = new Date(Date.now() - PENDING_INTENT_TTL_MS);
+  // Close any recent “I've sent” ghost intents for this user — the typed amount may
+  // not match what Monnify actually received (e.g. user typed ₦1,000, sent ₦200).
   const pending = await prisma.paymentIntent.findMany({
     where: {
       userId: input.userId,
       provider: "monnify",
       channel: "transfer",
       status: "PENDING",
-      amountKobo: BigInt(input.amountKobo),
       createdAt: { gte: cutoff },
-      // User-created confirm intents use TRF-… refs, not Monnify MNFY|… refs
       NOT: { reference: input.providerRef },
     },
     orderBy: { createdAt: "desc" },
-    take: 3,
+    take: 5,
   });
 
   for (const intent of pending) {
@@ -156,6 +156,8 @@ async function reconcileUserPendingIntents(input: {
           reconciledByPoll: true,
           monnifyTransactionReference: input.providerRef,
           ledgerVia: input.providerRef,
+          typedAmountKobo: intent.amountKobo.toString(),
+          creditedAmountKobo: String(input.amountKobo),
         },
       },
     });

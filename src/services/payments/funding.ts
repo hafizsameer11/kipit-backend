@@ -11,6 +11,12 @@ import { cardFeeKobo } from "./types.js";
 const MIN_DEPOSIT_NAIRA = 1_000;
 const MAX_CARD_NAIRA = 1_000_000;
 
+function depositDescription(channel: string) {
+  if (channel === "card") return "Card deposit";
+  if (channel === "transfer") return "Bank transfer deposit";
+  return "Wallet deposit";
+}
+
 export async function getOrCreateVirtualAccount(userId: string) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
   const va = await ensureMonnifyVirtualAccount(user);
@@ -103,7 +109,7 @@ async function completeIntent(intentId: string, providerRef?: string) {
     userId: intent.userId,
     amountKobo: intent.amountKobo,
     idempotencyKey: `pay-${intent.reference}`,
-    description: `${intent.provider} ${intent.channel} deposit`,
+    description: depositDescription(intent.channel),
     metadata: {
       provider: intent.provider,
       channel: intent.channel,
