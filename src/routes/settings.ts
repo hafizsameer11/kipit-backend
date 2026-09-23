@@ -340,6 +340,12 @@ settingsRouter.post(
         category: body.category,
         subject: body.subject,
         body: body.body,
+        messages: {
+          create: {
+            author: "USER",
+            body: body.body,
+          },
+        },
       },
     });
     await prisma.notification.create({
@@ -391,8 +397,22 @@ settingsRouter.get(
   asyncHandler(async (req: AuthRequest, res) => {
     const ticket = await prisma.supportTicket.findFirst({
       where: { id: String(req.params.id), userId: req.userId! },
+      include: { messages: { orderBy: { createdAt: "asc" } } },
     });
     if (!ticket) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+
+    const messages =
+      ticket.messages.length > 0
+        ? ticket.messages
+        : [
+            {
+              id: `legacy-${ticket.id}`,
+              author: "USER",
+              body: ticket.body,
+              createdAt: ticket.createdAt,
+            },
+          ];
+
     res.json({
       data: {
         id: ticket.id,
@@ -402,6 +422,56 @@ settingsRouter.get(
         status: ticket.status,
         createdAt: ticket.createdAt,
         updatedAt: ticket.updatedAt,
+        messages: messages.map((m) => ({
+          id: m.id,
+          author: m.author,
+          body: m.body,
+          createdAt: m.createdAt,
+        })),
+      },
+    });
+  }),
+);
+
+settingsRouter.post(
+  "/help/tickets/:id/messages",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z.object({ body: z.string().min(1).max(4000) }).parse(req.body);
+    const ticket = await prisma.supportTicket.findFirst({
+      where: { id: String(req.params.id), userId: req.userId! },
+    });
+    if (!ticket) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+    if (ticket.status === "CLOSED" || ticket.status === "RESOLVED") {
+      throw new AppError(400, "This ticket is closed. Submit a new one if you need more help.", "TICKET_CLOSED");
+    }
+
+    // Ensure legacy tickets have an opening message before replies.
+    const existingCount = await prisma.supportTicketMessage.count({ where: { ticketId: ticket.id } });
+    if (existingCount === 0) {
+      await prisma.supportTicketMessage.create({
+        data: { ticketId: ticket.id, author: "USER", body: ticket.body, createdAt: ticket.createdAt },
+      });
+    }
+
+    const message = await prisma.supportTicketMessage.create({
+      data: {
+        ticketId: ticket.id,
+        author: "USER",
+        body: body.body.trim(),
+      },
+    });
+    await prisma.supportTicket.update({
+      where: { id: ticket.id },
+      data: { status: ticket.status === "OPEN" ? "OPEN" : "IN_PROGRESS", updatedAt: new Date() },
+    });
+
+    res.status(201).json({
+      data: {
+        id: message.id,
+        author: message.author,
+        body: message.body,
+        createdAt: message.createdAt,
       },
     });
   }),
