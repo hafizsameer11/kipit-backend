@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { creditWalletFrom, ensureSystemAccount, interestForPeriod } from "../services/money.js";
+import { creditCallFrom, creditWalletFrom, ensureSystemAccount, interestForPeriod } from "../services/money.js";
 
 export async function runMaturityEngine() {
   const run = await prisma.jobRun.create({
@@ -77,7 +77,7 @@ export async function runMaturityEngine() {
       processed++;
     }
 
-    // Daily call interest accrual (visible credit)
+    // Daily call interest — credit Call Account so it compounds (product: daily on Call).
     const callBand = await prisma.rateBand.findFirst({ where: { code: "CALL" } });
     const rateBps = callBand?.rateBps ?? 1450;
     const callAccounts = await prisma.ledgerAccount.findMany({
@@ -89,7 +89,7 @@ export async function runMaturityEngine() {
       if (!acct.userId) continue;
       const daily = interestForPeriod(acct.balanceKobo, rateBps, 1);
       if (daily <= 0n) continue;
-      await creditWalletFrom({
+      await creditCallFrom({
         userId: acct.userId,
         amountKobo: daily,
         kind: "INTEREST",
@@ -97,9 +97,6 @@ export async function runMaturityEngine() {
         description: "Call Account daily interest",
         debitAccountId: interestExpense.id,
       });
-      // Move interest into call for compounding feel — credit call instead:
-      // Already credited wallet per product paper daily visible interest; leave in wallet for simplicity
-      // or post to call. Product paper: credited daily to Call. Re-post:
       callCredits++;
     }
 
