@@ -319,6 +319,8 @@ model Product {
   name           String
   blurb          String
   description    String?
+  /// Admin-managed Explore detail: about, how[], risks[], documents[], faqs[], highlights[]
+  details        Json?
   rateBps        Int
   tenorDays      Int
   minimumKobo    BigInt
