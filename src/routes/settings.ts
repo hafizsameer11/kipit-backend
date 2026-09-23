@@ -21,6 +21,18 @@ settingsRouter.get(
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
+    const lockedFields: string[] = [];
+    if (user.kycTier !== "TIER_0") {
+      lockedFields.push("firstName", "surname", "gender");
+    }
+    if (user.dateOfBirth) lockedFields.push("dateOfBirth");
+    if (user.phone) lockedFields.push("phone");
+
+    const consents = await prisma.consentAcceptance.findMany({
+      where: { userId: user.id },
+      orderBy: { acceptedAt: "desc" },
+    });
+
     res.json({
       data: {
         ...publicUser(user),
@@ -36,7 +48,12 @@ settingsRouter.get(
           lga: user.addressLga,
           pending: user.addressPending,
         },
-        lockedFields: user.kycTier !== "TIER_0" ? ["firstName", "surname", "dateOfBirth", "gender"] : [],
+        lockedFields,
+        consents: consents.map((c) => ({
+          docKey: c.docKey,
+          version: c.version,
+          acceptedAt: c.acceptedAt,
+        })),
       },
     });
   }),
@@ -64,9 +81,15 @@ settingsRouter.patch(
 
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
     if (user.kycTier !== "TIER_0") {
-      if (body.firstName || body.surname || body.dateOfBirth || body.gender) {
+      if (body.firstName || body.surname || body.gender) {
         throw new AppError(400, "Identity fields are locked after verification", "PROFILE_LOCKED");
       }
+    }
+    if (body.dateOfBirth && user.dateOfBirth) {
+      throw new AppError(400, "Date of birth is already set. Contact support to change it.", "PROFILE_LOCKED");
+    }
+    if (body.phone && user.phone) {
+      throw new AppError(400, "Phone is already set. Contact support to change it.", "PROFILE_LOCKED");
     }
 
     const updated = await prisma.user.update({
@@ -311,13 +334,51 @@ settingsRouter.get(
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
-    const count = await prisma.user.count({ where: { referredBy: user.referralCode } });
+    const referred = await prisma.user.findMany({
+      where: { referredBy: user.referralCode },
+      orderBy: { createdAt: "desc" },
+      select: {
+        id: true,
+        firstName: true,
+        surname: true,
+        createdAt: true,
+        kycTier: true,
+      },
+    });
+
+    const people = await Promise.all(
+      referred.map(async (r) => {
+        const funded =
+          (await prisma.placement.count({ where: { userId: r.id }, take: 1 })) > 0 ||
+          (await prisma.ledgerAccount.count({
+            where: { userId: r.id, balanceKobo: { gt: 0 } },
+            take: 1,
+          })) > 0 ||
+          (await prisma.journalLine.count({
+            where: { account: { userId: r.id } },
+            take: 1,
+          })) > 0;
+        return {
+          id: r.id,
+          name: `${r.firstName} ${r.surname}`.trim(),
+          joined: r.createdAt.toISOString(),
+          status: funded ? ("rewarded" as const) : ("pending" as const),
+          note: funded ? "Funded account" : r.kycTier === "TIER_0" ? "Signed up" : "Verified",
+          reward: funded ? 500 : 0,
+        };
+      }),
+    );
+
+    const rewardsEarned = people.reduce((sum, p) => sum + p.reward, 0);
+
     res.json({
       data: {
         code: user.referralCode,
         link: `https://www.mykipit.com/r/${user.referralCode}`,
-        successfulReferrals: count,
-        rewardsEarned: 0,
+        successfulReferrals: people.filter((p) => p.status === "rewarded").length,
+        totalReferrals: people.length,
+        rewardsEarned,
+        people,
       },
     });
   }),
