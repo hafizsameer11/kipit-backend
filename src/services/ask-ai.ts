@@ -29,6 +29,7 @@ const SYSTEM_PROMPT = `You are Kipit Ask AI — a helpful assistant inside the K
 
 Rules:
 - Be concise, warm, and clear. Use ₦ for amounts.
+- Plain text only. Never use Markdown — no **bold**, *italic*, # headings, bullet lists with *, or code fences. The app shows your words as plain chat bubbles, so asterisks look broken.
 - NEVER move money, change PIN, approve withdrawals, or invent balances/rates/transaction sources.
 - Only use numbers and facts returned by tools. If a tool fails, say you could not load live data.
 - When the user asks where money came from, why they received a credit, interest/earnings, or what a ₦ amount was — ALWAYS call list_recent_activity first (optionally with amountNaira). Answer from matching rows only. Do not invent a fixed-plan story if activity shows Call Account interest or a Call→Wallet move.
@@ -38,6 +39,23 @@ Rules:
 - You confirm nothing with PIN in chat — the user does that on the secure screen.
 - If the user asks something outside Kipit (general investing/KYC literacy is OK), answer briefly and steer back to Kipit when useful.
 - Prefer short answers (2–4 sentences) plus tools for cards/CTAs.`;
+
+/** Strip Markdown markers so chat bubbles stay readable as plain text. */
+function plainChatText(input: string) {
+  return input
+    .replace(/```[\s\S]*?```/g, (block) =>
+      block.replace(/^```\w*\n?/, "").replace(/```$/, "").trim(),
+    )
+    .replace(/^#{1,6}\s+/gm, "")
+    .replace(/\*\*([^*]+)\*\*/g, "$1")
+    .replace(/__([^_]+)__/g, "$1")
+    .replace(/(?<!\w)\*([^*\n]+)\*(?!\w)/g, "$1")
+    .replace(/(?<!\w)_([^_\n]+)_(?!\w)/g, "$1")
+    .replace(/^[\t ]*[-*•]\s+/gm, "• ")
+    .replace(/[ \t]+\n/g, "\n")
+    .replace(/\n{3,}/g, "\n\n")
+    .trim();
+}
 
 const TICKET_CATEGORIES = [
   "Deposits & wallet",
@@ -764,7 +782,7 @@ async function buildLlmReply(userId: string, sessionId: string, userText: string
       continue;
     }
 
-    const text = (assistant.content || "").trim();
+    const text = plainChatText(assistant.content || "");
     if (!text && blocks.length === 0) {
       return buildRuleBasedReply(userId, userText);
     }
