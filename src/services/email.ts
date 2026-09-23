@@ -75,6 +75,7 @@ export async function sendOtpEmail(input: {
     LOGIN: "sign in to Kipit",
     PASSWORD_RESET: "reset your Kipit password",
     PIN_RESET: "reset your Kipit transaction PIN",
+    ADMIN_LOGIN: "sign in to the Kipit admin console",
   };
   const action = purposeLabel[input.purpose] ?? "continue with Kipit";
   const subject = `Your Kipit code: ${input.code}`;

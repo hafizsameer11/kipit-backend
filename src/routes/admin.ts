@@ -19,6 +19,7 @@ import {
 } from "../middleware/admin.js";
 import { listSignupDropoffs } from "../services/signup-funnel.js";
 import { sendWelcomeEmail, notifyCustomer } from "../services/notify.js";
+import { requestOtp, verifyOtp } from "../services/auth.js";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { Router } from "express";
@@ -66,9 +67,67 @@ adminRouter.post(
       .object({ email: z.string().email(), password: z.string().min(1) })
       .parse(req.body);
     const admin = await prisma.adminUser.findUnique({ where: { email: body.email.toLowerCase() } });
-    if (!admin || !(await verifySecret(body.password, admin.passwordHash))) {
+    if (!admin || !admin.active || !(await verifySecret(body.password, admin.passwordHash))) {
       throw new AppError(401, "Invalid credentials", "AUTH_FAILED");
     }
+
+    const mfaToken = jwt.sign(
+      { sub: admin.id, typ: "admin_mfa", email: admin.email },
+      env.JWT_ACCESS_SECRET,
+      { expiresIn: "10m" },
+    );
+
+    const otp = await requestOtp({
+      target: admin.email,
+      purpose: "ADMIN_LOGIN",
+    });
+
+    res.json({
+      data: {
+        mfaRequired: true,
+        mfaToken,
+        admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
+        ...(otp.debugCode ? { debugCode: otp.debugCode } : {}),
+      },
+    });
+  }),
+);
+
+adminRouter.post(
+  "/login/otp",
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        mfaToken: z.string().min(10),
+        code: z.string().min(4).max(8),
+      })
+      .parse(req.body);
+
+    let payload: { sub?: string; typ?: string; email?: string };
+    try {
+      payload = jwt.verify(body.mfaToken, env.JWT_ACCESS_SECRET) as {
+        sub?: string;
+        typ?: string;
+        email?: string;
+      };
+    } catch {
+      throw new AppError(401, "MFA session expired. Sign in again.", "MFA_EXPIRED");
+    }
+    if (payload.typ !== "admin_mfa" || !payload.sub || !payload.email) {
+      throw new AppError(401, "Invalid MFA token", "MFA_INVALID");
+    }
+
+    const admin = await prisma.adminUser.findFirst({
+      where: { id: payload.sub, active: true },
+    });
+    if (!admin) throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
+
+    await verifyOtp({
+      target: admin.email,
+      purpose: "ADMIN_LOGIN",
+      code: body.code.trim(),
+    });
+
     const session = await prisma.adminSession.create({
       data: { adminId: admin.id, refreshTokenHash: "admin" },
     });
@@ -77,12 +136,71 @@ adminRouter.post(
       env.JWT_ACCESS_SECRET,
       { expiresIn: "8h" },
     );
+
+    await writeAudit({
+      actorAdminId: admin.id,
+      action: "admin.login",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+
     res.json({
       data: {
         accessToken,
         admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
       },
     });
+  }),
+);
+
+adminRouter.post(
+  "/login/otp/resend",
+  asyncHandler(async (req, res) => {
+    const body = z.object({ mfaToken: z.string().min(10) }).parse(req.body);
+    let payload: { sub?: string; typ?: string; email?: string };
+    try {
+      payload = jwt.verify(body.mfaToken, env.JWT_ACCESS_SECRET) as {
+        sub?: string;
+        typ?: string;
+        email?: string;
+      };
+    } catch {
+      throw new AppError(401, "MFA session expired. Sign in again.", "MFA_EXPIRED");
+    }
+    if (payload.typ !== "admin_mfa" || !payload.sub) {
+      throw new AppError(401, "Invalid MFA token", "MFA_INVALID");
+    }
+    const admin = await prisma.adminUser.findFirst({
+      where: { id: payload.sub, active: true },
+    });
+    if (!admin) throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
+
+    const otp = await requestOtp({
+      target: admin.email,
+      purpose: "ADMIN_LOGIN",
+    });
+
+    res.json({
+      data: {
+        sent: true,
+        ...(otp.debugCode ? { debugCode: otp.debugCode } : {}),
+      },
+    });
+  }),
+);
+
+adminRouter.post(
+  "/session/unlock",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z.object({ pin: z.string().length(4) }).parse(req.body);
+    const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    if (!admin.pinHash) {
+      throw new AppError(400, "Unlock PIN is not set for this account", "PIN_MISSING");
+    }
+    const ok = await verifySecret(body.pin, admin.pinHash);
+    if (!ok) throw new AppError(401, "Incorrect PIN", "PIN_INVALID");
+    res.json({ data: { unlocked: true } });
   }),
 );
 
@@ -1408,16 +1526,20 @@ adminRouter.post(
         name: z.string().min(2),
         role: adminRoleSchema,
         password: z.string().min(8).optional(),
+        pin: z.string().length(4).regex(/^\d{4}$/).optional(),
       })
       .parse(req.body);
     const tempPassword = body.password ?? `Kp${nanoid(10)}!`;
+    const tempPin = body.pin ?? String(1000 + Math.floor(Math.random() * 9000));
     const passwordHash = await hashSecret(tempPassword);
+    const pinHash = await hashSecret(tempPin);
     const row = await prisma.adminUser.create({
       data: {
         email: body.email.toLowerCase(),
         name: body.name,
         role: body.role,
         passwordHash,
+        pinHash,
       },
     });
     await writeAudit({
@@ -1434,6 +1556,7 @@ adminRouter.post(
         role: row.role,
         active: row.active,
         tempPassword,
+        tempPin,
       },
     });
   }),
