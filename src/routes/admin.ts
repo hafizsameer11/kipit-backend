@@ -72,23 +72,28 @@ adminRouter.post(
       throw new AppError(401, "Invalid credentials", "AUTH_FAILED");
     }
 
-    const mfaToken = jwt.sign(
-      { sub: admin.id, typ: "admin_mfa", email: admin.email },
+    // MFA temporarily disabled — issue session on password alone.
+    const session = await prisma.adminSession.create({
+      data: { adminId: admin.id, refreshTokenHash: "admin" },
+    });
+    const accessToken = jwt.sign(
+      { sub: admin.id, sid: session.id, typ: "admin", role: admin.role },
       env.JWT_ACCESS_SECRET,
-      { expiresIn: "10m" },
+      { expiresIn: "8h" },
     );
 
-    const otp = await requestOtp({
-      target: admin.email,
-      purpose: "ADMIN_LOGIN",
+    await writeAudit({
+      actorAdminId: admin.id,
+      action: "admin.login",
+      entityType: "AdminUser",
+      entityId: admin.id,
     });
 
     res.json({
       data: {
-        mfaRequired: true,
-        mfaToken,
+        mfaRequired: false,
+        accessToken,
         admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
-        ...(otp.debugCode ? { debugCode: otp.debugCode } : {}),
       },
     });
   }),
