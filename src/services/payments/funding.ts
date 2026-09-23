@@ -18,8 +18,15 @@ function depositDescription(channel: string) {
 }
 
 export async function getOrCreateVirtualAccount(userId: string) {
-  const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
-  const va = await ensureMonnifyVirtualAccount(user);
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: userId },
+    include: { kycProfile: { select: { bvn: true, nin: true } } },
+  });
+  const va = await ensureMonnifyVirtualAccount({
+    ...user,
+    bvn: user.kycProfile?.bvn,
+    nin: user.kycProfile?.nin,
+  });
   if (user.monnifyAccountNo !== va.accountNumber || user.monnifyBankName !== va.bankName) {
     await prisma.user.update({
       where: { id: userId },

@@ -20,6 +20,7 @@ import {
 import { listSignupDropoffs } from "../services/signup-funnel.js";
 import { sendWelcomeEmail, notifyCustomer } from "../services/notify.js";
 import { requestOtp, verifyOtp } from "../services/auth.js";
+import { productDetailsSchema, toPrismaJson, asProductDetails } from "../lib/product-details.js";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { Router } from "express";
@@ -1290,6 +1291,7 @@ adminRouter.get(
         largeTicket: p.largeTicket,
         category: { id: p.categoryId, slug: p.category.slug, name: p.category.name },
         createdAt: p.createdAt,
+        details: asProductDetails(p.details),
       })),
     });
   }),
@@ -1314,6 +1316,7 @@ adminRouter.post(
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
         issuer: z.string().optional(),
         largeTicket: z.boolean().optional(),
+        details: productDetailsSchema,
       })
       .parse(req.body);
 
@@ -1349,6 +1352,7 @@ adminRouter.post(
         name: body.name,
         blurb: body.blurb ?? body.name,
         description: body.description,
+        details: toPrismaJson(body.details),
         rateBps,
         tenorDays: body.tenorDays,
         minimumKobo: BigInt(Math.round(body.minimum * 100)),
@@ -1373,6 +1377,8 @@ adminRouter.post(
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
+        description: row.description,
+        details: asProductDetails(row.details),
       },
     });
   }),
@@ -1394,6 +1400,7 @@ adminRouter.patch(
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
         issuer: z.string().optional(),
         largeTicket: z.boolean().optional(),
+        details: productDetailsSchema,
       })
       .parse(req.body);
     const rateBps =
@@ -1404,6 +1411,7 @@ adminRouter.patch(
         name: body.name,
         blurb: body.blurb,
         description: body.description,
+        details: body.details !== undefined ? toPrismaJson(body.details) : undefined,
         rateBps,
         tenorDays: body.tenorDays,
         minimumKobo:
@@ -1428,6 +1436,8 @@ adminRouter.patch(
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
+        description: row.description,
+        details: asProductDetails(row.details),
       },
     });
   }),

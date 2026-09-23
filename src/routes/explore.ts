@@ -10,6 +10,7 @@ import { koboToNaira, nairaToKobo } from "../lib/crypto.js";
 import { verifyTransactionPin } from "../services/auth.js";
 import { debitWallet, interestForPeriod } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
+import { asProductDetails } from "../lib/product-details.js";
 
 export const exploreRouter = Router();
 
@@ -55,6 +56,7 @@ exploreRouter.get(
         largeTicket: p.largeTicket || p.minimumKobo >= 500_000_000n,
         category: { slug: p.category.slug, name: p.category.name },
         termsVersion: p.termsVersion,
+        details: asProductDetails(p.details),
       })),
     });
   }),
@@ -84,6 +86,7 @@ exploreRouter.get(
         largeTicket: product.largeTicket || product.minimumKobo >= 500_000_000n,
         category: { slug: product.category.slug, name: product.category.name },
         termsVersion: product.termsVersion,
+        details: asProductDetails(product.details),
       },
     });
   }),
