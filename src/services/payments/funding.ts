@@ -281,3 +281,14 @@ export async function listSavedCards(userId: string) {
     provider: c.provider,
   }));
 }
+
+export async function deleteSavedCard(userId: string, cardId: string) {
+  const existing = await prisma.cardToken.findFirst({
+    where: { id: cardId, userId },
+  });
+  if (!existing) {
+    throw new AppError(404, "Card not found", "NOT_FOUND");
+  }
+  await prisma.cardToken.delete({ where: { id: cardId } });
+  return { ok: true as const };
+}

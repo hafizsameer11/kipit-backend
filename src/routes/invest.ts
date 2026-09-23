@@ -242,6 +242,7 @@ investRouter.get(
         tenorDays: p.tenorDays,
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
         accrued: koboToNaira(p.accruedKobo),
+        maturityInstruction: p.maturityInstruction,
       })),
     });
   }),
