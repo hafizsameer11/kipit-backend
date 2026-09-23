@@ -1,4 +1,5 @@
 import { Router } from "express";
+import { z } from "zod";
 import { asyncHandler, AppError } from "../lib/errors.js";
 import type { AuthRequest } from "../middleware/auth.js";
 import { requireAuth } from "../middleware/auth.js";
@@ -74,6 +75,43 @@ portfolioRouter.get(
         product: p.product
           ? { id: p.product.id, name: p.product.name, slug: p.product.slug }
           : null,
+      },
+    });
+  }),
+);
+
+portfolioRouter.patch(
+  "/holdings/:id/maturity",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        maturityInstruction: z.enum(["WALLET", "ROLLOVER", "PAYOUT"]),
+      })
+      .parse(req.body);
+    const existing = await prisma.placement.findFirst({
+      where: { id: String(req.params.id), userId: req.userId!, status: "ACTIVE" },
+    });
+    if (!existing) throw new AppError(404, "Holding not found", "NOT_FOUND");
+    if (existing.maturityDate) {
+      const hoursLeft =
+        (existing.maturityDate.getTime() - Date.now()) / (60 * 60 * 1000);
+      if (hoursLeft < 24) {
+        throw new AppError(
+          400,
+          "Maturity instruction can only be changed up to 24 hours before maturity.",
+          "MATURITY_LOCKED",
+        );
+      }
+    }
+    const updated = await prisma.placement.update({
+      where: { id: existing.id },
+      data: { maturityInstruction: body.maturityInstruction },
+    });
+    res.json({
+      data: {
+        id: updated.id,
+        maturityInstruction: updated.maturityInstruction,
       },
     });
   }),

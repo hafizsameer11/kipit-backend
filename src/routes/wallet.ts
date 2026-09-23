@@ -10,6 +10,7 @@ import { writeAudit } from "../services/audit.js";
 import {
   confirmBankTransfer,
   confirmCardPayment,
+  deleteSavedCard,
   getOrCreateVirtualAccount,
   initializeCardFunding,
   listSavedCards,
@@ -60,6 +61,16 @@ walletRouter.get(
   requireKyc("TIER_1"),
   asyncHandler(async (req: AuthRequest, res) => {
     res.json({ data: await listSavedCards(req.userId!) });
+  }),
+);
+
+walletRouter.delete(
+  "/cards/:id",
+  requireAuth,
+  requireKyc("TIER_1"),
+  asyncHandler(async (req: AuthRequest, res) => {
+    const data = await deleteSavedCard(req.userId!, String(req.params.id));
+    res.json({ data });
   }),
 );
 
