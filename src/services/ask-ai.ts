@@ -29,8 +29,10 @@ const SYSTEM_PROMPT = `You are Kipit Ask AI — a helpful assistant inside the K
 
 Rules:
 - Be concise, warm, and clear. Use ₦ for amounts.
-- NEVER move money, change PIN, approve withdrawals, or invent balances/rates.
-- Only use numbers returned by tools. If a tool fails, say you could not load live data.
+- NEVER move money, change PIN, approve withdrawals, or invent balances/rates/transaction sources.
+- Only use numbers and facts returned by tools. If a tool fails, say you could not load live data.
+- When the user asks where money came from, why they received a credit, interest/earnings, or what a ₦ amount was — ALWAYS call list_recent_activity first (optionally with amountNaira). Answer from matching rows only. Do not invent a fixed-plan story if activity shows Call Account interest or a Call→Wallet move.
+- Labels: INTEREST + Call Account = daily Call interest. CALL_WITHDRAW = user moved money from Call Account into Kipit Wallet (not new interest). CALL_DEPOSIT = wallet → Call. PLACEMENT = investment purchase.
 - For funding, investing, or withdrawals, explain briefly and call suggest_handoff so the app shows a secure continue button.
 - For support issues you cannot resolve with tools, help the user file a support ticket via create_support_ticket (confirm category/subject/details first), or list_support_tickets to show open cases.
 - You confirm nothing with PIN in chat — the user does that on the secure screen.
@@ -59,15 +61,132 @@ const ALLOWED_HANDOFFS = new Set([
   "/settings/help/ticket",
   "/settings/help/tickets",
   "/fixed-plans/create",
+  "/call-account",
 ]);
+
+function humanActivityLabel(kind: string, accountType: string, credit: boolean) {
+  const k = kind.toUpperCase();
+  if (k === "INTEREST") {
+    return accountType === "USER_CALL"
+      ? "Call Account daily interest"
+      : "Interest credited to wallet";
+  }
+  if (k === "CALL_WITHDRAW") return "Moved from Call Account to Kipit Wallet";
+  if (k === "CALL_DEPOSIT") return "Moved from Kipit Wallet to Call Account";
+  if (k.includes("PLACEMENT") || k.includes("INVEST")) return "Investment purchase";
+  if (k.includes("MATURITY")) return "Maturity payout";
+  if (k.includes("WITHDRAW") || k.includes("PAYOUT")) return "Withdrawal / payout";
+  if (k.includes("DEPOSIT") || k.includes("FUND")) return "Wallet deposit";
+  return credit ? "Credit" : "Debit";
+}
+
+function activityLegs(kind: string, accountType: string, credit: boolean) {
+  const k = kind.toUpperCase();
+  if (k === "INTEREST") {
+    return accountType === "USER_CALL"
+      ? { source: "Kipit", destination: "Call Account" }
+      : { source: "Kipit", destination: "Kipit Wallet" };
+  }
+  if (k === "CALL_DEPOSIT") return { source: "Kipit Wallet", destination: "Call Account" };
+  if (k === "CALL_WITHDRAW") return { source: "Call Account", destination: "Kipit Wallet" };
+  if (k.includes("MATURITY")) return { source: "Investment", destination: "Kipit Wallet" };
+  if (credit) return { source: "External", destination: "Kipit Wallet" };
+  return { source: "Kipit Wallet", destination: "External" };
+}
+
+async function loadRecentActivity(userId: string, opts?: { limit?: number; amountNaira?: number }) {
+  const accounts = await prisma.ledgerAccount.findMany({
+    where: { userId },
+    select: { id: true, type: true },
+  });
+  const ids = accounts.map((a) => a.id);
+  if (!ids.length) return [];
+
+  const lines = await prisma.journalLine.findMany({
+    where: { accountId: { in: ids } },
+    include: {
+      entry: true,
+      account: { select: { type: true } },
+    },
+    orderBy: { createdAt: "desc" },
+    take: 200,
+  });
+
+  const byEntry = new Map<string, (typeof lines)[number]>();
+  for (const line of lines) {
+    const prev = byEntry.get(line.entryId);
+    if (
+      !prev ||
+      line.account.type === "USER_WALLET" ||
+      (prev.account.type !== "USER_WALLET" && line.account.type === "USER_CALL")
+    ) {
+      byEntry.set(line.entryId, line);
+    }
+  }
+
+  let rows = [...byEntry.values()]
+    .sort((a, b) => b.entry.createdAt.getTime() - a.entry.createdAt.getTime())
+    .map((l) => {
+      const abs = l.amountKobo < 0n ? -l.amountKobo : l.amountKobo;
+      const amount = koboToNaira(abs);
+      const credit = l.amountKobo >= 0n;
+      const kind = l.entry.kind;
+      const accountType = l.account.type;
+      const legs = activityLegs(kind, accountType, credit);
+      return {
+        id: l.entry.id,
+        reference: l.entry.reference,
+        kind,
+        description: l.entry.description ?? kind,
+        label: humanActivityLabel(kind, accountType, credit),
+        amount,
+        direction: credit ? ("in" as const) : ("out" as const),
+        accountType,
+        source: legs.source,
+        destination: legs.destination,
+        createdAt: l.entry.createdAt.toISOString(),
+      };
+    });
+
+  const target = opts?.amountNaira;
+  if (typeof target === "number" && Number.isFinite(target) && target > 0) {
+    const rounded = Math.round(target);
+    const matched = rows.filter((r) => Math.abs(Math.round(r.amount) - rounded) <= 1);
+    if (matched.length) rows = matched;
+  }
+
+  return rows.slice(0, opts?.limit ?? 12);
+}
 
 const TOOLS = [
   {
     type: "function" as const,
     function: {
       name: "get_balance",
-      description: "Get the user's live wallet, invested, and total portfolio values in Naira.",
+      description: "Get the user's live wallet, Call Account, invested placements, and total portfolio values in Naira.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
+    },
+  },
+  {
+    type: "function" as const,
+    function: {
+      name: "list_recent_activity",
+      description:
+        "List recent wallet/Call/investment movements from the ledger. Use whenever the user asks where money/interest came from, what a credit was, earnings, or a specific ₦ amount. Pass amountNaira to filter near that amount.",
+      parameters: {
+        type: "object",
+        properties: {
+          amountNaira: {
+            type: "number",
+            description: "Optional amount to match (e.g. 16 for ₦16). Matches within ₦1.",
+          },
+          limit: {
+            type: "number",
+            description: "Max rows to return (default 12, max 20).",
+          },
+        },
+        additionalProperties: false,
+      },
     },
   },
   {
@@ -198,10 +317,13 @@ async function runTool(
     const placements = await prisma.placement.findMany({
       where: { userId, status: "ACTIVE" },
     });
-    const invested = placements.reduce((s, p) => s + p.principalKobo, 0n) + call.balanceKobo;
+    const placementsTotal = placements.reduce((s, p) => s + p.principalKobo, 0n);
+    const invested = placementsTotal + call.balanceKobo;
     const total = wallet + invested;
     const payload = {
       wallet: koboToNaira(wallet),
+      callAccount: koboToNaira(call.balanceKobo),
+      placements: koboToNaira(placementsTotal),
       invested: koboToNaira(invested),
       total: koboToNaira(total),
       holdings: placements.length + (call.balanceKobo > 0n ? 1 : 0),
@@ -215,6 +337,28 @@ async function runTool(
       holdings: payload.holdings,
     });
     return payload;
+  }
+
+  if (name === "list_recent_activity") {
+    const limitRaw = typeof args.limit === "number" ? args.limit : 12;
+    const limit = Math.min(20, Math.max(1, Math.floor(limitRaw)));
+    const amountNaira =
+      typeof args.amountNaira === "number" && Number.isFinite(args.amountNaira)
+        ? args.amountNaira
+        : undefined;
+    const activity = await loadRecentActivity(userId, { limit, amountNaira });
+    blocks.push({
+      kind: "handoff",
+      label: "View activity",
+      to: "/portfolio/transactions",
+    });
+    return {
+      count: activity.length,
+      filteredByAmount: amountNaira ?? null,
+      activity,
+      tip:
+        "Use label/source/destination/kind. CALL_WITHDRAW is a move into wallet from Call, not new fixed-plan interest.",
+    };
   }
 
   if (name === "get_next_maturity") {
@@ -415,6 +559,32 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
   });
   const invested = placements.reduce((s, p) => s + p.principalKobo, 0n) + call.balanceKobo;
   const total = wallet + invested;
+
+  if (/(earn|earned|interest|where.*(from|come)|came from|\bcredit\b|what.*(₦|naira)|\bfrom\b.*call)/.test(text)) {
+    const amountMatch = text.match(/(?:₦\s*)?(\d{1,3}(?:,\d{3})*|\d+)(?:\s*naira)?/i);
+    const amountNaira = amountMatch
+      ? Number(String(amountMatch[1]).replace(/,/g, ""))
+      : undefined;
+    const activity = await loadRecentActivity(userId, {
+      limit: 8,
+      amountNaira: Number.isFinite(amountNaira) && (amountNaira as number) > 0 ? amountNaira : undefined,
+    });
+    if (activity.length) {
+      const top = activity[0]!;
+      const more =
+        activity.length > 1
+          ? ` Other nearby rows: ${activity
+              .slice(1, 3)
+              .map((a) => `₦${a.amount.toLocaleString()} ${a.label}`)
+              .join("; ")}.`
+          : "";
+      return {
+        mode: "rules",
+        text: `That ₦${top.amount.toLocaleString()} shows as ${top.label} (${top.source} → ${top.destination}).${more}`,
+        blocks: [{ kind: "handoff", label: "View activity", to: "/portfolio/transactions" }],
+      };
+    }
+  }
 
   if (/(balance|portfolio|worth|wallet)/.test(text)) {
     return {
