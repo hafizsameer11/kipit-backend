@@ -7,6 +7,7 @@ import { requireKyc } from "../middleware/kyc.js";
 import { creditWalletDeposit, getWalletBalanceKobo } from "../services/ledger.js";
 import { koboToNaira } from "../lib/crypto.js";
 import { writeAudit } from "../services/audit.js";
+import { prisma } from "../lib/prisma.js";
 import {
   confirmBankTransfer,
   confirmCardPayment,
@@ -135,6 +136,56 @@ walletRouter.post(
 );
 
 /**
+ * Poll for a wallet credit that landed after the user tapped “I've sent the transfer”.
+ * Used so the app never shows success for a typed amount that has not been received.
+ */
+walletRouter.get(
+  "/fund/credits/recent",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const afterRaw = String(req.query.after ?? "");
+    const after = afterRaw ? new Date(afterRaw) : new Date(Date.now() - 15 * 60 * 1000);
+    if (Number.isNaN(after.getTime())) {
+      throw new AppError(400, "Invalid after timestamp", "BAD_AFTER");
+    }
+
+    const intents = await prisma.paymentIntent.findMany({
+      where: {
+        userId: req.userId!,
+        status: "SUCCESS",
+        channel: { in: ["transfer", "card", "sandbox"] },
+        completedAt: { gte: after },
+        // Exclude reconciled ghost “I've sent” intents that did not move the ledger.
+        NOT: {
+          metadata: {
+            path: ["reconciledByPoll"],
+            equals: true,
+          },
+        },
+      },
+      orderBy: { completedAt: "desc" },
+      take: 5,
+    });
+
+    const balanceKobo = await getWalletBalanceKobo(req.userId!);
+    res.json({
+      data: {
+        wallet: {
+          balance: koboToNaira(balanceKobo),
+          balanceKobo: balanceKobo.toString(),
+        },
+        credits: intents.map((i) => ({
+          reference: i.reference,
+          amount: koboToNaira(i.amountKobo),
+          channel: i.channel,
+          completedAt: i.completedAt?.toISOString() ?? null,
+        })),
+      },
+    });
+  }),
+);
+
+/**
  * Dev/sandbox helper — creates a PaymentIntent + credits wallet (mock provider).
  * Prefer /fund/transfer/confirm or /fund/card/* in product flows.
  */
@@ -154,7 +205,6 @@ walletRouter.post(
       .parse(req.body);
 
     const { makeReference, nairaToKobo: toKobo } = await import("../lib/crypto.js");
-    const { prisma } = await import("../lib/prisma.js");
     const amountKobo = toKobo(body.amount);
     const reference = body.idempotencyKey.startsWith("sbx-")
       ? body.idempotencyKey
@@ -191,7 +241,7 @@ walletRouter.post(
       userId: req.userId!,
       amountKobo,
       idempotencyKey: `pay-${reference}`,
-      description: `Sandbox ${body.provider} deposit`,
+      description: "Wallet deposit",
       metadata: { provider: body.provider, mock: true },
     });
 
