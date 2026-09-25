@@ -449,15 +449,21 @@ model Gift {
   recipientId    String?
   recipient      User?      @relation("GiftsReceived", fields: [recipientId], references: [id])
   recipientPhone String?
+  recipientName  String?
   placementId    String?
   placement      Placement? @relation(fields: [placementId], references: [id])
   claimCode      String     @unique
   message        String?
+  /** Tenor applied when the recipient claims (investment is created on claim). */
+  tenorDays      Int        @default(90)
   status         GiftStatus @default(PENDING)
   amountKobo     BigInt
   createdAt      DateTime   @default(now())
   claimedAt      DateTime?
   expiresAt      DateTime?
+
+  @@index([recipientPhone, status])
+  @@index([status, expiresAt])
 }
 
 model AutoInvestRule {
