@@ -1202,6 +1202,8 @@ adminRouter.get(
         subject: t.subject,
         body: t.body,
         status: t.status,
+        attachmentUrl: t.attachmentUrl,
+        attachmentName: t.attachmentName,
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
         user: {
@@ -1279,6 +1281,8 @@ adminRouter.patch(
         status: row.status,
         subject: row.subject,
         body: row.body,
+        attachmentUrl: row.attachmentUrl,
+        attachmentName: row.attachmentName,
         messages: row.messages,
         user: { id: row.userId, name: `${row.user.firstName} ${row.user.surname}` },
       },

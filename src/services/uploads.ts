@@ -25,12 +25,14 @@ function stripDataUrl(raw: string): { mime?: string; base64: string } {
   return { base64: trimmed.replace(/\s+/g, "") };
 }
 
-export async function saveKycDocument(input: {
+async function saveUserUpload(input: {
   userId: string;
-  kind: KycDocKind;
+  namespace: "kyc" | "support";
+  prefix: string;
   contentType: string;
   dataBase64: string;
-}): Promise<{ url: string; relativePath: string; bytes: number }> {
+  originalName?: string;
+}): Promise<{ url: string; relativePath: string; bytes: number; filename: string }> {
   const parsed = stripDataUrl(input.dataBase64);
   const mime = (parsed.mime || input.contentType || "image/jpeg").toLowerCase();
   const ext = ALLOWED[mime];
@@ -52,15 +54,58 @@ export async function saveKycDocument(input: {
     throw new AppError(400, "File too large (max 6 MB)", "UPLOAD_TOO_LARGE");
   }
 
-  const dir = path.join(UPLOAD_ROOT, "kyc", input.userId);
+  const dir = path.join(UPLOAD_ROOT, input.namespace, input.userId);
   await mkdir(dir, { recursive: true });
-  const filename = `${input.kind}-${nanoid(16)}.${ext}`;
+  const filename = `${input.prefix}-${nanoid(16)}.${ext}`;
   const absolute = path.join(dir, filename);
   await writeFile(absolute, buffer);
 
-  const relativePath = `kyc/${input.userId}/${filename}`;
+  const relativePath = `${input.namespace}/${input.userId}/${filename}`;
   const url = `${env.APP_BASE_URL.replace(/\/$/, "")}/uploads/${relativePath}`;
-  return { url, relativePath, bytes: buffer.length };
+  const displayName =
+    input.originalName?.trim().slice(0, 160) ||
+    `${input.prefix}.${ext}`;
+  return { url, relativePath, bytes: buffer.length, filename: displayName };
+}
+
+export async function saveKycDocument(input: {
+  userId: string;
+  kind: KycDocKind;
+  contentType: string;
+  dataBase64: string;
+}): Promise<{ url: string; relativePath: string; bytes: number }> {
+  const saved = await saveUserUpload({
+    userId: input.userId,
+    namespace: "kyc",
+    prefix: input.kind,
+    contentType: input.contentType,
+    dataBase64: input.dataBase64,
+  });
+  return { url: saved.url, relativePath: saved.relativePath, bytes: saved.bytes };
+}
+
+export async function saveSupportAttachment(input: {
+  userId: string;
+  contentType: string;
+  dataBase64: string;
+  originalName?: string;
+}): Promise<{ url: string; relativePath: string; bytes: number; filename: string }> {
+  return saveUserUpload({
+    userId: input.userId,
+    namespace: "support",
+    prefix: "ticket",
+    contentType: input.contentType,
+    dataBase64: input.dataBase64,
+    originalName: input.originalName,
+  });
+}
+
+/** True when URL is one of our stored support uploads for this user. */
+export function isOwnSupportUploadUrl(userId: string, value: string): boolean {
+  const v = value.trim();
+  if (!v) return false;
+  const marker = `/uploads/support/${userId}/`;
+  return v.includes(marker);
 }
 
 /** Reject local device paths that were incorrectly stored as "uploads". */
@@ -72,5 +117,6 @@ export function isStoredUploadUrl(value: string): boolean {
   if (/^ph:\/\//i.test(v)) return false;
   if (v.startsWith("/uploads/")) return true;
   if (v.includes("/uploads/kyc/")) return true;
+  if (v.includes("/uploads/support/")) return true;
   return /^https?:\/\//i.test(v);
 }
