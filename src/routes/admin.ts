@@ -448,6 +448,7 @@ adminRouter.get(
       orderBy: { lastActiveAt: "desc" },
     });
     const kyc = await getKycStatus(userId).catch(() => null);
+    const profile = await prisma.kycProfile.findUnique({ where: { userId } });
     const lastActiveAt = lastSession?.lastActiveAt ?? user.updatedAt;
     res.json({
       data: {
@@ -468,6 +469,20 @@ adminRouter.get(
         lastActive: fmtRelative(lastActiveAt),
         balances,
         kyc,
+        // Docs for admin viewing (not a blocking review status once NIN auto-approves Tier 2)
+        kycDocuments: {
+          selfieUrl: profile?.selfieUrl ?? null,
+          addressDocUrl: profile?.addressDocUrl ?? null,
+          addressStreet: user.addressStreet,
+          addressCity: user.addressCity,
+          addressState: user.addressState,
+          addressLga: user.addressLga,
+          ninName: profile?.ninName ?? null,
+          bvnName: profile?.bvnName ?? null,
+          occupation: user.occupation,
+          employmentStatus: user.employmentStatus,
+          sourceOfFunds: user.sourceOfFunds,
+        },
       },
     });
   }),
@@ -781,6 +796,13 @@ adminRouter.get(
         email: r.user.email,
         status: r.status,
         updatedAt: r.updatedAt,
+        hasSelfie: Boolean(r.selfieUrl),
+        hasAddressDoc: Boolean(r.addressDocUrl),
+        selfieUrl: r.selfieUrl,
+        addressDocUrl: r.addressDocUrl,
+        ninProviderStatus: r.ninProviderStatus,
+        bvnProviderStatus: r.bvnProviderStatus,
+        tierTarget: r.nin ? 2 : 1,
       })),
     });
   }),

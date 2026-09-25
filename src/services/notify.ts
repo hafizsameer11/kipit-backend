@@ -1,23 +1,6 @@
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
-import { sendEmail } from "./email.js";
-
-function brandWrap(title: string, bodyHtml: string) {
-  return `
-    <div style="font-family:system-ui,-apple-system,Segoe UI,Roboto,sans-serif;max-width:560px;margin:0 auto;padding:24px;color:#0b1d3a;background:#f7f9fc">
-      <div style="background:#0b1d3a;color:#fff;border-radius:16px 16px 0 0;padding:20px 24px">
-        <div style="font-size:11px;letter-spacing:0.18em;text-transform:uppercase;color:#eab333;font-weight:700">Kipit Asset Management</div>
-        <h1 style="font-size:22px;margin:8px 0 0;font-weight:800">${title}</h1>
-      </div>
-      <div style="background:#fff;border:1px solid #e2e8f0;border-top:0;border-radius:0 0 16px 16px;padding:24px;line-height:1.55">
-        ${bodyHtml}
-        <p style="margin:24px 0 0;color:#64748b;font-size:12px;line-height:1.5">
-          Kipit is powered by Kipit Asset Management Limited. All funds are managed by Kipit Asset Management Limited.
-        </p>
-      </div>
-    </div>
-  `;
-}
+import { brandWrap, sendEmail } from "./email.js";
 
 export async function sendWelcomeEmail(input: {
   to: string;
