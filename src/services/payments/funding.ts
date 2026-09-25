@@ -5,7 +5,11 @@ import { koboToNaira, makeReference, nairaToKobo } from "../../lib/crypto.js";
 import { creditWalletDeposit, getWalletBalanceKobo } from "../ledger.js";
 import { writeAudit } from "../audit.js";
 import { ensureMonnifyVirtualAccount } from "./monnify.js";
-import { initializePaystackCard, verifyPaystackTransaction } from "./paystack.js";
+import {
+  chargePaystackAuthorization,
+  initializePaystackCard,
+  verifyPaystackTransaction,
+} from "./paystack.js";
 import { cardFeeKobo } from "./types.js";
 
 const MIN_DEPOSIT_NAIRA = 1_000;
@@ -55,14 +59,53 @@ export async function initializeCardFunding(input: {
   const amountKobo = nairaToKobo(input.amountNaira);
   const feeKobo = cardFeeKobo(amountKobo);
   const reference = makeReference("CARD");
+  const email = user.email ?? `${user.id}@customers.kipit.ng`;
+  const chargeAmount = Number(amountKobo + feeKobo);
 
-  const init = await initializePaystackCard({
-    email: user.email ?? `${user.id}@customers.kipit.ng`,
-    amountKobo: Number(amountKobo + feeKobo),
-    reference,
-    callbackUrl: `${env.WEB_APP_URL}/wallet/processing?amount=${input.amountNaira}&method=card&ref=${reference}`,
-    metadata: { userId: user.id, amountNaira: input.amountNaira, kipitChannel: "card" },
-  });
+  let init: Awaited<ReturnType<typeof initializePaystackCard>> & { charged?: boolean };
+
+  if (input.cardTokenId) {
+    const saved = await prisma.cardToken.findFirst({
+      where: { id: input.cardTokenId, userId: input.userId },
+    });
+    const authCode = saved?.token?.startsWith("AUTH_") ? saved.token : null;
+    if (authCode) {
+      try {
+        init = await chargePaystackAuthorization({
+          email,
+          amountKobo: chargeAmount,
+          reference,
+          authorizationCode: authCode,
+          metadata: { userId: user.id, amountNaira: input.amountNaira, kipitChannel: "card" },
+        });
+      } catch {
+        // Saved auth not reusable — open a fresh Checkout.
+        init = await initializePaystackCard({
+          email,
+          amountKobo: chargeAmount,
+          reference,
+          callbackUrl: `${env.WEB_APP_URL}/wallet/processing?amount=${input.amountNaira}&method=card&ref=${reference}`,
+          metadata: { userId: user.id, amountNaira: input.amountNaira, kipitChannel: "card" },
+        });
+      }
+    } else {
+      init = await initializePaystackCard({
+        email,
+        amountKobo: chargeAmount,
+        reference,
+        callbackUrl: `${env.WEB_APP_URL}/wallet/processing?amount=${input.amountNaira}&method=card&ref=${reference}`,
+        metadata: { userId: user.id, amountNaira: input.amountNaira, kipitChannel: "card" },
+      });
+    }
+  } else {
+    init = await initializePaystackCard({
+      email,
+      amountKobo: chargeAmount,
+      reference,
+      callbackUrl: `${env.WEB_APP_URL}/wallet/processing?amount=${input.amountNaira}&method=card&ref=${reference}`,
+      metadata: { userId: user.id, amountNaira: input.amountNaira, kipitChannel: "card" },
+    });
+  }
 
   const intent = await prisma.paymentIntent.create({
     data: {
@@ -78,6 +121,7 @@ export async function initializeCardFunding(input: {
         publicKey: init.publicKey,
         cardTokenId: input.cardTokenId,
         saveCard: input.saveCard ?? false,
+        charged: Boolean(init.charged),
         mock: paystackUseMock(),
       },
     },
@@ -228,11 +272,15 @@ export async function confirmCardPayment(input: { userId: string; reference: str
   if (verified.card) {
     const meta = (intent.metadata ?? {}) as { saveCard?: boolean };
     if (meta.saveCard) {
+      const token =
+        verified.card.authorizationCode && verified.card.authorizationCode.startsWith("AUTH_")
+          ? verified.card.authorizationCode
+          : `tok_${intent.reference}`;
       await prisma.cardToken.create({
         data: {
           userId: intent.userId,
           provider: "paystack",
-          token: `tok_${intent.reference}`,
+          token,
           last4: verified.card.last4,
           brand: verified.card.brand,
           nickname: verified.card.bank,
