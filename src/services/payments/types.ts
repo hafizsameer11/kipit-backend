@@ -21,7 +21,7 @@ export type CardVerifyResult = {
   amountKobo: number;
   gatewayResponse?: string;
   channel?: string;
-  card?: { last4: string; brand: string; bank?: string };
+  card?: { last4: string; brand: string; bank?: string; authorizationCode?: string };
 };
 
 export type TransferCreditEvent = {

@@ -187,7 +187,12 @@ export async function verifyPaystackTransaction(reference: string): Promise<Card
       reference: string;
       gateway_response?: string;
       channel?: string;
-      authorization?: { last4?: string; brand?: string; bank?: string };
+      authorization?: {
+        last4?: string;
+        brand?: string;
+        bank?: string;
+        authorization_code?: string;
+      };
     };
   }>(`/transaction/verify/${encodeURIComponent(reference)}`);
 
@@ -203,9 +208,75 @@ export async function verifyPaystackTransaction(reference: string): Promise<Card
           last4: json.data.authorization.last4 ?? "0000",
           brand: json.data.authorization.brand ?? "card",
           bank: json.data.authorization.bank,
+          authorizationCode: json.data.authorization.authorization_code,
         }
       : undefined,
   };
+}
+
+/** Charge a previously authorized Paystack card (no full Checkout when reusable). */
+export async function chargePaystackAuthorization(input: {
+  email: string;
+  amountKobo: number;
+  reference: string;
+  authorizationCode: string;
+  metadata?: Record<string, unknown>;
+}): Promise<CardInitResult & { charged?: boolean }> {
+  if (paystackUseMock()) {
+    return {
+      provider: "paystack",
+      reference: input.reference,
+      accessCode: `mock_charge_${input.reference}`,
+      authorizationUrl: `${env.WEB_APP_URL}/wallet/processing?amount=${Math.round(input.amountKobo / 100)}&method=card&ref=${encodeURIComponent(input.reference)}`,
+      publicKey: env.PAYSTACK_PUBLIC_KEY || "pk_test_mock",
+      charged: true,
+    };
+  }
+
+  const json = await paystackFetch<{
+    data: {
+      status: string;
+      reference: string;
+      access_code?: string;
+      authorization_url?: string;
+    };
+  }>("/transaction/charge_authorization", {
+    method: "POST",
+    body: JSON.stringify({
+      email: input.email,
+      amount: input.amountKobo,
+      reference: input.reference,
+      authorization_code: input.authorizationCode,
+      currency: "NGN",
+      metadata: input.metadata,
+    }),
+  });
+
+  const status = String(json.data.status || "").toLowerCase();
+  if (status === "success") {
+    return {
+      provider: "paystack",
+      reference: json.data.reference || input.reference,
+      accessCode: json.data.access_code,
+      authorizationUrl: `${env.WEB_APP_URL}/wallet/processing?amount=${Math.round(input.amountKobo / 100)}&method=card&ref=${encodeURIComponent(json.data.reference || input.reference)}`,
+      publicKey: env.PAYSTACK_PUBLIC_KEY || undefined,
+      charged: true,
+    };
+  }
+
+  if (json.data.authorization_url) {
+    return {
+      provider: "paystack",
+      reference: json.data.reference || input.reference,
+      accessCode: json.data.access_code,
+      authorizationUrl: json.data.authorization_url,
+      publicKey: env.PAYSTACK_PUBLIC_KEY || undefined,
+      charged: false,
+    };
+  }
+
+  // Fall through — caller should open a fresh Checkout initialize.
+  throw new AppError(402, "Could not charge saved card — try a new card", "CHARGE_FAILED");
 }
 
 export function verifyPaystackWebhookSignature(
