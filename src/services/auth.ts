@@ -166,6 +166,14 @@ export async function registerUser(input: {
     }).catch(() => undefined);
   }
 
+  // Non-app recipients: gift lands in portfolio once they register with the gifted phone.
+  if (user.phone) {
+    const { claimPendingGiftsForUser } = await import("./gifts.js");
+    await claimPendingGiftsForUser(user.id).catch((err) =>
+      console.warn("[gift-auto-claim]", err),
+    );
+  }
+
   return user;
 }
 
@@ -273,6 +281,13 @@ export async function loginWithPassword(input: {
     ipAddress: input.ipAddress,
     userAgent: input.userAgent,
   });
+
+  if (user.phone) {
+    const { claimPendingGiftsForUser } = await import("./gifts.js");
+    await claimPendingGiftsForUser(user.id).catch((err) =>
+      console.warn("[gift-auto-claim]", err),
+    );
+  }
 
   return session;
 }
