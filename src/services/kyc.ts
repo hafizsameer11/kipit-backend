@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
 import { writeAudit } from "./audit.js";
+import { sendBrandedNoticeEmail } from "./email.js";
 import type { PremblyPerson } from "./prembly.js";
 
 /** Demo BVN used in local mock flows (seed / sandbox UX). */
@@ -169,7 +170,7 @@ export async function confirmBvnMatch(userId: string) {
 
 /**
  * Queue Tier 2 (NIN + profile) for async Prembly verification.
- * Selfie / address docs are required references — liveness is never auto-passed here.
+ * Selfie / address docs are stored for admin viewing — Tier 2 auto-approves on NIN + name match.
  */
 export async function submitTier2(input: {
   userId: string;
@@ -319,21 +320,36 @@ export async function adminReviewKyc(input: {
     after: { reason: input.reason },
   });
 
-  // Notify on admin reject (approve also useful)
+  // Notify customer (branded email, no deep-link CTA)
+  const title = input.approve
+    ? profile.nin
+      ? "Tier 2 approved"
+      : "Tier 1 approved"
+    : "Verification update";
+  const body = input.approve
+    ? profile.nin
+      ? "Your Tier 2 verification was approved. You can now withdraw to your bank account."
+      : "Your identity check was approved. You can fund your wallet and invest."
+    : input.reason ?? "Your verification was not approved. Please try again or contact support.";
+
   await prisma.notification.create({
     data: {
       userId: input.userId,
-      title: input.approve
-        ? profile.nin
-          ? "Tier 2 approved"
-          : "Tier 1 approved"
-        : "Verification update",
-      body: input.approve
-        ? "Your identity check was approved."
-        : input.reason ?? "Your verification was not approved. Please review and try again.",
+      title,
+      body,
       href: "/settings/verification",
     },
   });
+
+  if (user.email) {
+    await sendBrandedNoticeEmail({
+      to: user.email,
+      firstName: user.firstName,
+      subject: title,
+      title,
+      body,
+    }).catch(() => undefined);
+  }
 
   return getKycStatus(input.userId);
 }

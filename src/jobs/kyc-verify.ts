@@ -1,5 +1,5 @@
 import { prisma } from "../lib/prisma.js";
-import { sendEmail } from "../services/email.js";
+import { sendBrandedNoticeEmail } from "../services/email.js";
 import { writeAudit } from "../services/audit.js";
 import { verifyBvnWithPrembly, verifyNinWithPrembly } from "../services/prembly.js";
 import { fuzzyScore, formatPremblyName } from "../services/kyc.js";
@@ -10,9 +10,10 @@ const BATCH = 25;
 async function notifyUser(input: {
   userId: string;
   email: string | null | undefined;
+  firstName?: string | null;
   title: string;
   body: string;
-  href: string;
+  href?: string;
 }) {
   await prisma.notification.create({
     data: {
@@ -23,11 +24,12 @@ async function notifyUser(input: {
     },
   });
   if (input.email) {
-    await sendEmail({
+    await sendBrandedNoticeEmail({
       to: input.email,
+      firstName: input.firstName,
       subject: input.title,
-      text: `${input.body}\n\nOpen Kipit: ${input.href}`,
-      html: `<p>${input.body}</p><p><a href="${input.href}">Open Kipit</a></p>`,
+      title: input.title,
+      body: input.body,
     }).catch(() => undefined);
   }
 }
@@ -82,6 +84,7 @@ async function processBvnCase(profileId: string) {
     await notifyUser({
       userId: profile.userId,
       email: profile.user.email,
+      firstName: profile.user.firstName,
       title: "BVN verification failed",
       body: reason,
       href: "/settings/verification",
@@ -123,6 +126,7 @@ async function processBvnCase(profileId: string) {
     await notifyUser({
       userId: profile.userId,
       email: profile.user.email,
+      firstName: profile.user.firstName,
       title: "BVN verification failed",
       body: reason,
       href: "/settings/verification",
@@ -170,9 +174,10 @@ async function processBvnCase(profileId: string) {
   await notifyUser({
     userId: profile.userId,
     email: profile.user.email,
+    firstName: profile.user.firstName,
     title: "Tier 1 approved",
     body: ninStillPending
-      ? "Your BVN was verified. We're still checking your NIN for Tier 2."
+      ? "Your BVN was verified. We're still confirming your NIN for Tier 2."
       : "Your BVN was verified successfully. You can fund your wallet and invest.",
     href: ninStillPending ? "/settings/verification" : "/wallet/add-money",
   });
@@ -238,6 +243,7 @@ async function processNinCase(profileId: string) {
     await notifyUser({
       userId: profile.userId,
       email: profile.user.email,
+      firstName: profile.user.firstName,
       title: "NIN verification failed",
       body: reason,
       href: "/settings/verification",
@@ -279,6 +285,7 @@ async function processNinCase(profileId: string) {
     await notifyUser({
       userId: profile.userId,
       email: profile.user.email,
+      firstName: profile.user.firstName,
       title: "NIN verification failed",
       body: reason,
       href: "/settings/verification",
@@ -294,36 +301,44 @@ async function processNinCase(profileId: string) {
     return "rejected";
   }
 
-  // Prembly NIN match only — Tier 2 stays pending until compliance reviews selfie + address.
-  await prisma.kycProfile.update({
-    where: { id: profile.id },
-    data: {
-      provider: "prembly",
-      status: "PENDING_REVIEW",
-      ninName,
-      ninMatchScore: score,
-      ninProviderStatus: "SUCCESS",
-      providerAttempts: attempts,
-      providerLastError: null,
-      providerReference: result.reference,
-      providerCheckedAt: new Date(),
-      rejectionReason: null,
-    },
-  });
+  // NIN + name match → auto-approve Tier 2. Selfie / address stay on the profile for admin viewing only.
+  await prisma.$transaction([
+    prisma.user.update({
+      where: { id: profile.userId },
+      data: { kycTier: "TIER_2" },
+    }),
+    prisma.kycProfile.update({
+      where: { id: profile.id },
+      data: {
+        provider: "prembly",
+        status: "APPROVED",
+        ninName,
+        ninMatchScore: score,
+        ninProviderStatus: "SUCCESS",
+        providerAttempts: attempts,
+        providerLastError: null,
+        providerReference: result.reference,
+        providerCheckedAt: new Date(),
+        rejectionReason: null,
+        reviewedAt: new Date(),
+      },
+    }),
+  ]);
 
   await notifyUser({
     userId: profile.userId,
     email: profile.user.email,
-    title: "NIN check complete",
-    body: "Your NIN matched. We're still reviewing your selfie and proof of address for Tier 2.",
-    href: "/settings/verification",
+    firstName: profile.user.firstName,
+    title: "Tier 2 approved",
+    body: "Your Tier 2 verification was approved. You can now withdraw to your bank account.",
+    href: "/withdraw",
   });
 
   await writeAudit({
     actorUserId: profile.userId,
-    action: "kyc.nin_matched_provider",
-    entityType: "KycProfile",
-    entityId: profile.id,
+    action: "kyc.tier2_approved_provider",
+    entityType: "User",
+    entityId: profile.userId,
     after: { score, provider: "prembly", reference: result.reference },
   });
   return "approved";
