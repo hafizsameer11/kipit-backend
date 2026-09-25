@@ -967,6 +967,7 @@ adminRouter.get(
       include: { user: true, payoutBank: true },
     });
     if (!r) throw new AppError(404, "Withdrawal not found", "NOT_FOUND");
+    const balances = await userBalances(r.userId);
     res.json({
       data: {
         id: r.id,
@@ -974,6 +975,10 @@ adminRouter.get(
         status: r.status,
         amount: koboToNaira(r.amountKobo),
         declineReason: r.declineReason,
+        // Flat fields — admin UI mapWithdrawalRow reads bank / accountName / accountNumber.
+        bank: r.payoutBank.bankName,
+        accountName: r.payoutBank.accountName,
+        accountNumber: r.payoutBank.accountNumber,
         createdAt: r.createdAt,
         processedAt: r.processedAt,
         user: {
@@ -982,12 +987,9 @@ adminRouter.get(
           phone: r.user.phone,
           name: `${r.user.firstName} ${r.user.surname}`,
           kycTier: r.user.kycTier,
+          createdAt: r.user.createdAt,
         },
-        payoutBank: {
-          bankName: r.payoutBank.bankName,
-          accountName: r.payoutBank.accountName,
-          accountNumber: r.payoutBank.accountNumber,
-        },
+        balances,
       },
     });
   }),
