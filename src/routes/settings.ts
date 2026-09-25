@@ -13,6 +13,10 @@ import {
   verifyTransactionPin,
 } from "../services/auth.js";
 import { writeAudit } from "../services/audit.js";
+import {
+  isOwnSupportUploadUrl,
+  saveSupportAttachment,
+} from "../services/uploads.js";
 
 export const settingsRouter = Router();
 
@@ -385,6 +389,34 @@ settingsRouter.get(
 );
 
 settingsRouter.post(
+  "/help/attachments",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        contentType: z.string().min(3).max(100),
+        dataBase64: z.string().min(32),
+        filename: z.string().min(1).max(160).optional(),
+      })
+      .parse(req.body);
+    const saved = await saveSupportAttachment({
+      userId: req.userId!,
+      contentType: body.contentType,
+      dataBase64: body.dataBase64,
+      originalName: body.filename,
+    });
+    res.status(201).json({
+      data: {
+        url: saved.url,
+        path: saved.relativePath,
+        bytes: saved.bytes,
+        filename: saved.filename,
+      },
+    });
+  }),
+);
+
+settingsRouter.post(
   "/help/tickets",
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
@@ -393,18 +425,35 @@ settingsRouter.post(
         category: z.string().min(1).max(80),
         subject: z.string().min(1).max(160),
         body: z.string().min(1).max(4000),
+        attachmentUrl: z.string().url().max(500).optional(),
+        attachmentName: z.string().min(1).max(160).optional(),
       })
       .parse(req.body);
+
+    let attachmentUrl: string | undefined;
+    let attachmentName: string | undefined;
+    if (body.attachmentUrl) {
+      if (!isOwnSupportUploadUrl(req.userId!, body.attachmentUrl)) {
+        throw new AppError(400, "Invalid attachment. Upload the file again.", "UPLOAD_INVALID");
+      }
+      attachmentUrl = body.attachmentUrl;
+      attachmentName = body.attachmentName?.trim() || "attachment";
+    }
+
     const ticket = await prisma.supportTicket.create({
       data: {
         userId: req.userId!,
         category: body.category,
         subject: body.subject,
         body: body.body,
+        attachmentUrl: attachmentUrl ?? null,
+        attachmentName: attachmentName ?? null,
         messages: {
           create: {
             author: "USER",
             body: body.body,
+            attachmentUrl: attachmentUrl ?? null,
+            attachmentName: attachmentName ?? null,
           },
         },
       },
@@ -423,6 +472,8 @@ settingsRouter.post(
         status: ticket.status,
         category: ticket.category,
         subject: ticket.subject,
+        attachmentUrl: ticket.attachmentUrl,
+        attachmentName: ticket.attachmentName,
         createdAt: ticket.createdAt,
       },
     });
@@ -445,6 +496,8 @@ settingsRouter.get(
         subject: t.subject,
         body: t.body,
         status: t.status,
+        attachmentUrl: t.attachmentUrl,
+        attachmentName: t.attachmentName,
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
       })),
@@ -470,6 +523,8 @@ settingsRouter.get(
               id: `legacy-${ticket.id}`,
               author: "USER",
               body: ticket.body,
+              attachmentUrl: ticket.attachmentUrl,
+              attachmentName: ticket.attachmentName,
               createdAt: ticket.createdAt,
             },
           ];
@@ -481,12 +536,16 @@ settingsRouter.get(
         subject: ticket.subject,
         body: ticket.body,
         status: ticket.status,
+        attachmentUrl: ticket.attachmentUrl,
+        attachmentName: ticket.attachmentName,
         createdAt: ticket.createdAt,
         updatedAt: ticket.updatedAt,
         messages: messages.map((m) => ({
           id: m.id,
           author: m.author,
           body: m.body,
+          attachmentUrl: "attachmentUrl" in m ? m.attachmentUrl : null,
+          attachmentName: "attachmentName" in m ? m.attachmentName : null,
           createdAt: m.createdAt,
         })),
       },
@@ -498,20 +557,49 @@ settingsRouter.post(
   "/help/tickets/:id/messages",
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
-    const body = z.object({ body: z.string().min(1).max(4000) }).parse(req.body);
+    const body = z
+      .object({
+        body: z.string().min(1).max(4000),
+        attachmentUrl: z.string().url().max(500).optional(),
+        attachmentName: z.string().min(1).max(160).optional(),
+      })
+      .parse(req.body);
     const ticket = await prisma.supportTicket.findFirst({
       where: { id: String(req.params.id), userId: req.userId! },
     });
     if (!ticket) throw new AppError(404, "Ticket not found", "NOT_FOUND");
     if (ticket.status === "CLOSED" || ticket.status === "RESOLVED") {
-      throw new AppError(400, "This ticket is closed. Submit a new one if you need more help.", "TICKET_CLOSED");
+      throw new AppError(
+        400,
+        "This ticket is closed. Submit a new one if you need more help.",
+        "TICKET_CLOSED",
+      );
+    }
+
+    let attachmentUrl: string | undefined;
+    let attachmentName: string | undefined;
+    if (body.attachmentUrl) {
+      if (!isOwnSupportUploadUrl(req.userId!, body.attachmentUrl)) {
+        throw new AppError(400, "Invalid attachment. Upload the file again.", "UPLOAD_INVALID");
+      }
+      attachmentUrl = body.attachmentUrl;
+      attachmentName = body.attachmentName?.trim() || "attachment";
     }
 
     // Ensure legacy tickets have an opening message before replies.
-    const existingCount = await prisma.supportTicketMessage.count({ where: { ticketId: ticket.id } });
+    const existingCount = await prisma.supportTicketMessage.count({
+      where: { ticketId: ticket.id },
+    });
     if (existingCount === 0) {
       await prisma.supportTicketMessage.create({
-        data: { ticketId: ticket.id, author: "USER", body: ticket.body, createdAt: ticket.createdAt },
+        data: {
+          ticketId: ticket.id,
+          author: "USER",
+          body: ticket.body,
+          attachmentUrl: ticket.attachmentUrl,
+          attachmentName: ticket.attachmentName,
+          createdAt: ticket.createdAt,
+        },
       });
     }
 
@@ -520,11 +608,16 @@ settingsRouter.post(
         ticketId: ticket.id,
         author: "USER",
         body: body.body.trim(),
+        attachmentUrl: attachmentUrl ?? null,
+        attachmentName: attachmentName ?? null,
       },
     });
     await prisma.supportTicket.update({
       where: { id: ticket.id },
-      data: { status: ticket.status === "OPEN" ? "OPEN" : "IN_PROGRESS", updatedAt: new Date() },
+      data: {
+        status: ticket.status === "OPEN" ? "OPEN" : "IN_PROGRESS",
+        updatedAt: new Date(),
+      },
     });
 
     res.status(201).json({
@@ -532,6 +625,8 @@ settingsRouter.post(
         id: message.id,
         author: message.author,
         body: message.body,
+        attachmentUrl: message.attachmentUrl,
+        attachmentName: message.attachmentName,
         createdAt: message.createdAt,
       },
     });

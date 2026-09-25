@@ -521,26 +521,31 @@ model FeedCard {
 }
 
 model SupportTicket {
-  id        String                @id @default(cuid())
-  userId    String
-  user      User                  @relation(fields: [userId], references: [id], onDelete: Cascade)
-  category  String
-  subject   String
-  body      String
-  status    TicketStatus          @default(OPEN)
-  createdAt DateTime              @default(now())
-  updatedAt DateTime              @updatedAt
-  messages  SupportTicketMessage[]
+  id             String                 @id @default(cuid())
+  userId         String
+  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category       String
+  subject        String
+  body           String
+  /// Optional screenshot / PDF from the user (public URL under /uploads/support/…)
+  attachmentUrl  String?
+  attachmentName String?
+  status         TicketStatus           @default(OPEN)
+  createdAt      DateTime               @default(now())
+  updatedAt      DateTime               @updatedAt
+  messages       SupportTicketMessage[]
 }
 
 model SupportTicketMessage {
-  id        String        @id @default(cuid())
-  ticketId  String
-  ticket    SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
+  id             String        @id @default(cuid())
+  ticketId       String
+  ticket         SupportTicket @relation(fields: [ticketId], references: [id], onDelete: Cascade)
   /// USER | SUPPORT | SYSTEM
-  author    String
-  body      String
-  createdAt DateTime      @default(now())
+  author         String
+  body           String
+  attachmentUrl  String?
+  attachmentName String?
+  createdAt      DateTime      @default(now())
 
   @@index([ticketId, createdAt])
 }
