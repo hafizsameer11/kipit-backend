@@ -139,9 +139,10 @@ async function main() {
       email: adminEmail,
       name: "Seyi Adeleke",
       passwordHash,
+      pinHash: await hashSecret("2468"),
       role: "SUPER",
     },
-    update: { passwordHash, role: "SUPER", active: true },
+    update: { passwordHash, pinHash: await hashSecret("2468"), role: "SUPER", active: true },
   });
 
   // Second admin for maker-checker demos
@@ -151,9 +152,10 @@ async function main() {
       email: "ops@kipit.com",
       name: "Ops Checker",
       passwordHash: await hashSecret("Kipit1234!"),
+      pinHash: await hashSecret("2468"),
       role: "OPERATIONS",
     },
-    update: {},
+    update: { pinHash: await hashSecret("2468") },
   });
 
   // Demo consumer matching web/mobile DEMO_IDENTIFIER

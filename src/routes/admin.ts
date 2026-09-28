@@ -210,6 +210,58 @@ adminRouter.post(
   }),
 );
 
+/** Set or reset the idle-lock Quick PIN (requires console password). */
+adminRouter.post(
+  "/session/pin",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        password: z.string().min(1),
+        pin: z.string().length(4).regex(/^\d{4}$/, "PIN must be 4 digits"),
+        confirmPin: z.string().length(4),
+      })
+      .parse(req.body);
+
+    if (body.pin !== body.confirmPin) {
+      throw new AppError(400, "PIN confirmation does not match", "PIN_MISMATCH");
+    }
+
+    const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    const passwordOk = await verifySecret(body.password, admin.passwordHash);
+    if (!passwordOk) {
+      throw new AppError(401, "Incorrect console password", "PASSWORD_INVALID");
+    }
+
+    const hadPin = Boolean(admin.pinHash);
+    const pinHash = await hashSecret(body.pin);
+    await prisma.adminUser.update({
+      where: { id: admin.id },
+      data: { pinHash },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: hadPin ? "admin.pin.reset" : "admin.pin.set",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+
+    res.json({ data: { ok: true, hasPin: true } });
+  }),
+);
+
+adminRouter.get(
+  "/session/pin",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const admin = await prisma.adminUser.findUniqueOrThrow({
+      where: { id: req.adminId! },
+      select: { pinHash: true },
+    });
+    res.json({ data: { hasPin: Boolean(admin.pinHash) } });
+  }),
+);
+
 adminRouter.post(
   "/logout",
   requireAdmin,
