@@ -14,7 +14,13 @@ export function requireKyc(min: KycTier) {
   return async (req: AuthRequest, _res: Response, next: NextFunction) => {
     try {
       const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
-      if (user.frozen) throw new AppError(403, "Account frozen", "ACCOUNT_FROZEN");
+      if (user.frozen) {
+        throw new AppError(
+          403,
+          "Your account is temporarily restricted. Your money is safe. Contact Kipit support to lift the restriction.",
+          "ACCOUNT_FROZEN",
+        );
+      }
       if (tierRank[user.kycTier] < tierRank[min]) {
         throw new AppError(403, `Requires ${min}`, "KYC_REQUIRED");
       }

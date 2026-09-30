@@ -772,18 +772,31 @@ adminRouter.get(
   requireAdmin,
   asyncHandler(async (req, res) => {
     const rows = await prisma.session.findMany({
-      where: { userId: String(req.params.userId), revokedAt: null },
+      where: { userId: String(req.params.userId) },
       orderBy: { lastActiveAt: "desc" },
+      take: 50,
     });
+    const now = Date.now();
+    const ACTIVE_MS = 30 * 24 * 60 * 60 * 1000;
+    let markedCurrent = false;
     res.json({
-      data: rows.map((s) => ({
-        id: s.id,
-        deviceName: s.deviceName,
-        userAgent: s.userAgent,
-        ipAddress: s.ipAddress,
-        lastActiveAt: s.lastActiveAt,
-        createdAt: s.createdAt,
-      })),
+      data: rows.map((s) => {
+        const revoked = Boolean(s.revokedAt);
+        const fresh = now - s.lastActiveAt.getTime() < ACTIVE_MS;
+        const current = !revoked && !markedCurrent;
+        if (current) markedCurrent = true;
+        return {
+          id: s.id,
+          deviceName: s.deviceName,
+          userAgent: s.userAgent,
+          ipAddress: s.ipAddress,
+          lastActiveAt: s.lastActiveAt,
+          revokedAt: s.revokedAt,
+          createdAt: s.createdAt,
+          current,
+          active: !revoked && fresh,
+        };
+      }),
     });
   }),
 );
@@ -827,7 +840,19 @@ adminRouter.patch(
       entityType: "User",
       entityId: user.id,
       after: { frozen: body.frozen, reason: body.reason },
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent") ?? undefined,
     });
+    const reasonText = body.reason?.trim();
+    await notifyCustomer({
+      userId: user.id,
+      title: body.frozen ? "Account restricted" : "Account restriction lifted",
+      body: body.frozen
+        ? `Your Kipit account has been temporarily restricted${reasonText ? `: ${reasonText}` : "."} Your money is safe. Contact support if you need help.`
+        : "Your Kipit account access has been restored. You can fund, invest and withdraw again.",
+      href: "/settings/help",
+      pushKind: "security",
+    }).catch(() => undefined);
     res.json({ data: { id: user.id, frozen: user.frozen } });
   }),
 );
@@ -1131,7 +1156,25 @@ adminRouter.get(
   requireAdmin,
   asyncHandler(async (_req, res) => {
     const bands = await prisma.rateBand.findMany({ orderBy: { minDays: "asc" } });
-    res.json({ data: bands });
+    const placements = await prisma.placement.findMany({
+      where: { status: "ACTIVE" },
+      select: { principalKobo: true, tenorDays: true },
+    });
+    res.json({
+      data: bands.map((b) => {
+        const matching = placements.filter((p) => {
+          const days = p.tenorDays ?? 0;
+          if (b.maxDays == null) return days >= b.minDays;
+          return days >= b.minDays && days <= b.maxDays;
+        });
+        const principalKobo = matching.reduce((s, p) => s + p.principalKobo, 0n);
+        return {
+          ...b,
+          placements: matching.length,
+          principal: koboToNaira(principalKobo),
+        };
+      }),
+    });
   }),
 );
 
@@ -1142,16 +1185,22 @@ adminRouter.post(
     const body = z
       .object({
         bandId: z.string(),
-        proposedBps: z.number().int().positive(),
+        proposedBps: z.number().int().positive().max(4000),
         effectiveFrom: z.string(),
         reason: z.string().optional(),
       })
       .parse(req.body);
+    const effective = new Date(body.effectiveFrom);
+    const startOfToday = new Date();
+    startOfToday.setHours(0, 0, 0, 0);
+    if (Number.isNaN(effective.getTime()) || effective < startOfToday) {
+      throw new AppError(400, "Effective date must be today or later", "INVALID_DATE");
+    }
     const row = await prisma.rateChangeRequest.create({
       data: {
         bandId: body.bandId,
         proposedBps: body.proposedBps,
-        effectiveFrom: new Date(body.effectiveFrom),
+        effectiveFrom: effective,
         reason: body.reason,
         makerAdminId: req.adminId!,
       },
@@ -1270,6 +1319,60 @@ adminRouter.get(
           email: t.user.email,
         },
       })),
+    });
+  }),
+);
+
+adminRouter.post(
+  "/support/tickets",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        userId: z.string().min(1),
+        category: z.string().min(1).max(80),
+        subject: z.string().min(1).max(160),
+        body: z.string().min(1).max(4000),
+      })
+      .parse(req.body);
+    const customer = await prisma.user.findUnique({ where: { id: body.userId } });
+    if (!customer) throw new AppError(404, "User not found", "NOT_FOUND");
+    const ticket = await prisma.supportTicket.create({
+      data: {
+        userId: body.userId,
+        category: body.category,
+        subject: body.subject.trim(),
+        body: body.body.trim(),
+        messages: {
+          create: {
+            author: "SUPPORT",
+            body: body.body.trim(),
+          },
+        },
+      },
+    });
+    await notifyCustomer({
+      userId: body.userId,
+      title: "Support ticket opened",
+      body: `We've opened “${ticket.subject}” for you. Check Help & support for updates.`,
+      href: `/settings/help/tickets/${ticket.id}`,
+      pushKind: "security",
+    }).catch(() => undefined);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "support.ticket.created",
+      entityType: "SupportTicket",
+      entityId: ticket.id,
+      after: { userId: body.userId, subject: ticket.subject },
+    });
+    res.status(201).json({
+      data: {
+        id: ticket.id,
+        status: ticket.status,
+        subject: ticket.subject,
+        category: ticket.category,
+        createdAt: ticket.createdAt,
+      },
     });
   }),
 );
