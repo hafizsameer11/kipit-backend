@@ -116,6 +116,17 @@ investRouter.post(
     await verifyTransactionPin(req.userId!, body.pin);
     await moveWalletToCall(req.userId!, nairaToKobo(body.amount), body.idempotencyKey);
     const call = await ensureUserCall(req.userId!);
+    const { createUserNotification } = await import("../services/notify.js");
+    await createUserNotification({
+      userId: req.userId!,
+      title: "Added to Call Account",
+      body: `₦${body.amount.toLocaleString()} moved from your wallet into Call Account.`,
+      href: "/call-account",
+      pushKind: "investment",
+      emailKind: "investment",
+      amountNaira: body.amount,
+      emailDetail: "Call Account top-up",
+    }).catch(() => undefined);
     res.status(201).json({
       data: { balance: koboToNaira(call.balanceKobo), balanceKobo: call.balanceKobo.toString() },
     });
@@ -137,6 +148,17 @@ investRouter.post(
     await verifyTransactionPin(req.userId!, body.pin);
     await moveCallToWallet(req.userId!, nairaToKobo(body.amount), body.idempotencyKey);
     const wallet = await getWalletBalanceKobo(req.userId!);
+    const { createUserNotification } = await import("../services/notify.js");
+    await createUserNotification({
+      userId: req.userId!,
+      title: "Moved to wallet",
+      body: `₦${body.amount.toLocaleString()} moved from Call Account into your wallet.`,
+      href: "/wallet",
+      pushKind: "deposit",
+      emailKind: "deposit",
+      amountNaira: body.amount,
+      emailDetail: "From Call Account",
+    }).catch(() => undefined);
     res.status(201).json({
       data: { walletBalance: koboToNaira(wallet), walletBalanceKobo: wallet.toString() },
     });

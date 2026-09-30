@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { AppError } from "../lib/errors.js";
 import { writeAudit } from "./audit.js";
 import { sendBrandedNoticeEmail } from "./email.js";
+import { createUserNotification } from "./notify.js";
 import type { PremblyPerson } from "./prembly.js";
 
 /** Demo BVN used in local mock flows (seed / sandbox UX). */
@@ -332,13 +333,12 @@ export async function adminReviewKyc(input: {
       : "Your identity check was approved. You can fund your wallet and invest."
     : input.reason ?? "Your verification was not approved. Please try again or contact support.";
 
-  await prisma.notification.create({
-    data: {
-      userId: input.userId,
-      title,
-      body,
-      href: "/settings/verification",
-    },
+  await createUserNotification({
+    userId: input.userId,
+    title,
+    body,
+    href: "/settings/verification",
+    pushKind: "kyc",
   });
 
   if (user.email) {

@@ -13,6 +13,7 @@ import { hashSecret, koboToNaira, nairaToKobo } from "../lib/crypto.js";
 import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
+import { createUserNotification } from "../services/notify.js";
 import {
   getConfigJson,
   setConfigJson,
@@ -442,14 +443,13 @@ adminResourcesRouter.patch(
       await prisma.supportTicketMessage.create({
         data: { ticketId: existing.id, author: "SUPPORT", body: replyText },
       });
-      await prisma.notification.create({
-        data: {
-          userId: existing.userId,
-          title: "Support replied",
-          body: `New reply on “${existing.subject}”.`,
-          href: `/settings/help/tickets/${existing.id}`,
-        },
-      });
+      await createUserNotification({
+        userId: existing.userId,
+        title: "Support replied",
+        body: `New reply on “${existing.subject}”.`,
+        href: `/settings/help/tickets/${existing.id}`,
+        pushKind: "security",
+      }).catch(() => undefined);
     }
 
     const row = await prisma.supportTicket.update({
