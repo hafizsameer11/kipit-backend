@@ -6,6 +6,7 @@ import type { Request, Response, NextFunction } from "express";
 import { Router } from "express";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
+import type { Prisma } from "@prisma/client";
 import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
@@ -589,7 +590,7 @@ adminResourcesRouter.post(
         availability: body.availability ?? "OPEN",
         issuer: body.issuer,
         largeTicket: body.largeTicket ?? false,
-        details: body.details ?? undefined,
+        details: (body.details as Prisma.InputJsonValue | undefined) ?? undefined,
       },
       include: { category: true },
     });
@@ -649,7 +650,7 @@ adminResourcesRouter.patch(
         availability: body.availability,
         issuer: body.issuer,
         largeTicket: body.largeTicket,
-        details: body.details,
+        details: body.details as Prisma.InputJsonValue | undefined,
       },
       include: { category: true },
     });
