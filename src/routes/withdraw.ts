@@ -45,6 +45,28 @@ withdrawRouter.get(
   }),
 );
 
+withdrawRouter.delete(
+  "/accounts/:id",
+  requireAuth,
+  requireKyc("TIER_2"),
+  asyncHandler(async (req: AuthRequest, res) => {
+    const id = String(req.params.id || "");
+    const account = await prisma.payoutBank.findFirst({
+      where: { id, userId: req.userId! },
+    });
+    if (!account) throw new AppError(404, "Payout account not found", "NOT_FOUND");
+    await prisma.payoutBank.delete({ where: { id: account.id } });
+    await writeAudit({
+      actorUserId: req.userId,
+      action: "payout_bank.delete",
+      entityType: "PayoutBank",
+      entityId: account.id,
+      after: { bankCode: account.bankCode, accountNumber: account.accountNumber },
+    });
+    res.json({ data: { ok: true } });
+  }),
+);
+
 withdrawRouter.post(
   "/accounts",
   requireAuth,

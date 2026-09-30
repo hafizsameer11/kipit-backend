@@ -153,6 +153,16 @@ settingsRouter.patch(
 );
 
 settingsRouter.post(
+  "/pin/verify",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z.object({ pin: z.string().length(4) }).parse(req.body);
+    await verifyTransactionPin(req.userId!, body.pin);
+    res.json({ data: { ok: true } });
+  }),
+);
+
+settingsRouter.post(
   "/pin/change",
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
