@@ -140,3 +140,46 @@ export async function sendOtpEmail(input: {
 export function emailTransportReady() {
   return smtpConfigured() || (env.EMAIL_PROVIDER === "resend" && Boolean(env.RESEND_API_KEY));
 }
+
+/** Invite a non-Kipit recipient to download the app and claim a gift. */
+export async function sendGiftInviteEmail(input: {
+  to: string;
+  recipientName?: string | null;
+  senderFirstName: string;
+  amountNaira: number;
+  claimCode: string;
+  claimLink: string;
+  message?: string | null;
+}) {
+  const name = (input.recipientName || "").trim() || "there";
+  const amount = `₦${input.amountNaira.toLocaleString("en-NG")}`;
+  const subject = `${input.senderFirstName} sent you a ${amount} Kipit gift`;
+  const note = (input.message || "").trim();
+  const text = [
+    `Hi ${name},`,
+    "",
+    `${input.senderFirstName} sent you a ${amount} investment gift on Kipit.`,
+    note ? `Message: "${note}"` : null,
+    "",
+    "Create a free Kipit account with this email to claim it into your portfolio:",
+    input.claimLink,
+    "",
+    `Claim code: ${input.claimCode}`,
+    "",
+    "— Kipit Asset Management Limited",
+  ]
+    .filter((line) => line != null)
+    .join("\n");
+
+  const html = brandWrap(
+    "You've received a Kipit gift",
+    `<p style="margin:0 0 12px">Hi ${name},</p>
+     <p style="margin:0 0 12px"><strong>${input.senderFirstName}</strong> sent you a <strong>${amount}</strong> investment gift on Kipit.</p>
+     ${note ? `<p style="margin:0 0 12px;padding:12px;border-radius:12px;background:#f7f9fc;border:1px solid #e2e8f0">“${note}”</p>` : ""}
+     <p style="margin:0 0 16px">Create a free Kipit account with this email address to claim it into your portfolio.</p>
+     <p style="margin:0 0 16px"><a href="${input.claimLink}" style="display:inline-block;background:#0b1d3a;color:#fff;text-decoration:none;font-weight:700;padding:12px 18px;border-radius:999px">Claim your gift</a></p>
+     <p style="margin:0;color:#64748b;font-size:13px">Or open this link: ${input.claimLink}<br/>Claim code: <strong>${input.claimCode}</strong></p>`,
+  );
+
+  return sendEmail({ to: input.to, subject, text, html });
+}

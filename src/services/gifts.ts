@@ -197,18 +197,30 @@ export async function claimGiftForUser(
   };
 }
 
-/** Auto-claim all pending gifts whose recipient phone matches the user. */
+export function normalizeGiftEmail(raw: string | null | undefined): string | null {
+  if (!raw) return null;
+  const email = raw.trim().toLowerCase();
+  if (!/^[^\s@]+@[^\s@]+\.[^\s@]{2,}$/.test(email)) return null;
+  return email;
+}
+
+/** Auto-claim pending gifts matching the user's phone and/or email. */
 export async function claimPendingGiftsForUser(userId: string): Promise<ClaimedGiftResult[]> {
   const user = await prisma.user.findUnique({ where: { id: userId } });
-  if (!user?.phone) return [];
-  const variants = giftPhoneVariants(user.phone);
-  if (variants.length === 0) return [];
+  if (!user) return [];
+
+  const phoneVariants = giftPhoneVariants(user.phone);
+  const email = normalizeGiftEmail(user.email);
+  const match: Array<{ recipientPhone?: { in: string[] }; recipientEmail?: string }> = [];
+  if (phoneVariants.length) match.push({ recipientPhone: { in: phoneVariants } });
+  if (email) match.push({ recipientEmail: email });
+  if (!match.length) return [];
 
   const pending = await prisma.gift.findMany({
     where: {
       status: "PENDING",
-      recipientPhone: { in: variants },
-      OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }],
+      OR: match,
+      AND: [{ OR: [{ expiresAt: null }, { expiresAt: { gt: new Date() } }] }],
     },
     take: 20,
   });
