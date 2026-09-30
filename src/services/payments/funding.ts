@@ -8,6 +8,7 @@ import { ensureMonnifyVirtualAccount } from "./monnify.js";
 import {
   chargePaystackAuthorization,
   initializePaystackCard,
+  normalizePaystackBrand,
   verifyPaystackTransaction,
 } from "./paystack.js";
 import { cardFeeKobo } from "./types.js";
@@ -276,16 +277,31 @@ export async function confirmCardPayment(input: { userId: string; reference: str
         verified.card.authorizationCode && verified.card.authorizationCode.startsWith("AUTH_")
           ? verified.card.authorizationCode
           : `tok_${intent.reference}`;
-      await prisma.cardToken.create({
-        data: {
-          userId: intent.userId,
-          provider: "paystack",
-          token,
-          last4: verified.card.last4,
-          brand: verified.card.brand,
-          nickname: verified.card.bank,
-        },
+      const existing = await prisma.cardToken.findFirst({
+        where: { userId: intent.userId, token },
       });
+      const brand = verified.card.brand || "Card";
+      if (existing) {
+        await prisma.cardToken.update({
+          where: { id: existing.id },
+          data: {
+            last4: verified.card.last4,
+            brand,
+            nickname: verified.card.bank ?? existing.nickname,
+          },
+        });
+      } else {
+        await prisma.cardToken.create({
+          data: {
+            userId: intent.userId,
+            provider: "paystack",
+            token,
+            last4: verified.card.last4,
+            brand,
+            nickname: verified.card.bank,
+          },
+        });
+      }
     }
   }
 
@@ -337,7 +353,7 @@ export async function listSavedCards(userId: string) {
   });
   return cards.map((c) => ({
     id: c.id,
-    brand: c.brand ?? "Card",
+    brand: normalizePaystackBrand({ brand: c.brand }),
     last4: c.last4,
     bank: c.nickname ?? "Bank",
     provider: c.provider,

@@ -3,6 +3,35 @@ import { env, paystackUseMock, paystackBaseUrl } from "../../lib/env.js";
 import { AppError } from "../../lib/errors.js";
 import type { CardInitResult, CardVerifyResult } from "./types.js";
 
+/** Map Paystack brand / card_type / BIN to a stable display label. */
+export function normalizePaystackBrand(input: {
+  brand?: string | null;
+  cardType?: string | null;
+  bin?: string | null;
+}): string {
+  const raw = `${input.brand || ""} ${input.cardType || ""}`.toLowerCase();
+  if (raw.includes("verve")) return "Verve";
+  if (raw.includes("master")) return "Mastercard";
+  if (raw.includes("visa")) return "Visa";
+  if (raw.includes("american express") || raw.includes("amex")) return "Amex";
+
+  const bin = String(input.bin || "").replace(/\D/g, "");
+  if (bin.length >= 4) {
+    const n4 = Number(bin.slice(0, 4));
+    const n2 = Number(bin.slice(0, 2));
+    if (n2 >= 51 && n2 <= 55) return "Mastercard";
+    if (n4 >= 2221 && n4 <= 2720) return "Mastercard";
+    if (bin.startsWith("4")) return "Visa";
+    if (bin.startsWith("506") || bin.startsWith("507") || bin.startsWith("650")) return "Verve";
+  }
+
+  const brand = String(input.brand || "").trim();
+  if (brand && !/^card$/i.test(brand)) {
+    return brand.charAt(0).toUpperCase() + brand.slice(1).toLowerCase();
+  }
+  return "Card";
+}
+
 async function paystackFetch<T>(path: string, init?: RequestInit): Promise<T> {
   const res = await fetch(`${paystackBaseUrl()}${path}`, {
     ...init,
@@ -190,25 +219,36 @@ export async function verifyPaystackTransaction(reference: string): Promise<Card
       authorization?: {
         last4?: string;
         brand?: string;
+        card_type?: string;
+        bin?: string;
         bank?: string;
         authorization_code?: string;
+        exp_month?: string;
+        exp_year?: string;
       };
     };
   }>(`/transaction/verify/${encodeURIComponent(reference)}`);
 
   const ok = json.data.status === "success";
+  const auth = json.data.authorization;
   return {
     success: ok,
     reference: json.data.reference,
     amountKobo: json.data.amount,
     gatewayResponse: json.data.gateway_response,
     channel: json.data.channel,
-    card: json.data.authorization
+    card: auth
       ? {
-          last4: json.data.authorization.last4 ?? "0000",
-          brand: json.data.authorization.brand ?? "card",
-          bank: json.data.authorization.bank,
-          authorizationCode: json.data.authorization.authorization_code,
+          last4: auth.last4 ?? "0000",
+          brand: normalizePaystackBrand({
+            brand: auth.brand,
+            cardType: auth.card_type,
+            bin: auth.bin,
+          }),
+          bank: auth.bank,
+          authorizationCode: auth.authorization_code,
+          expMonth: auth.exp_month,
+          expYear: auth.exp_year,
         }
       : undefined,
   };
