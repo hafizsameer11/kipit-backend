@@ -1511,16 +1511,30 @@ adminResourcesRouter.get(
 adminResourcesRouter.get(
   "/dashboard/maturities",
   requireAdmin,
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
     const now = new Date();
+    now.setHours(0, 0, 0, 0);
     const in7 = new Date(now);
     in7.setDate(in7.getDate() + 7);
-    const in30 = new Date(now);
-    in30.setDate(in30.getDate() + 30);
+    in7.setHours(23, 59, 59, 999);
+    const defaultEnd = new Date(now);
+    defaultEnd.setDate(defaultEnd.getDate() + 90);
+    defaultEnd.setHours(23, 59, 59, 999);
+
+    const fromRaw = typeof req.query.from === "string" ? req.query.from : undefined;
+    const toRaw = typeof req.query.to === "string" ? req.query.to : undefined;
+    const rangeStart = fromRaw ? new Date(fromRaw) : now;
+    const rangeEnd = toRaw ? new Date(toRaw) : defaultEnd;
+    if (Number.isNaN(rangeStart.getTime()) || Number.isNaN(rangeEnd.getTime())) {
+      throw new AppError(400, "Invalid from or to date", "VALIDATION");
+    }
+    rangeStart.setHours(0, 0, 0, 0);
+    rangeEnd.setHours(23, 59, 59, 999);
+
     const rows = await prisma.placement.findMany({
       where: {
         status: "ACTIVE",
-        maturityDate: { gte: now, lte: in30 },
+        maturityDate: { gte: rangeStart, lte: rangeEnd },
       },
       include: { user: true },
       orderBy: { maturityDate: "asc" },
@@ -1545,7 +1559,7 @@ adminResourcesRouter.get(
             year: "numeric",
           }),
           window,
-          maturityDate: maturity,
+          maturityDate: maturity.toISOString(),
         };
       }),
     });
@@ -1622,6 +1636,56 @@ adminResourcesRouter.get(
         interestCredits: koboToNaira(interestCredits),
         withdrawals: koboToNaira(withdrawals),
       },
+    });
+  }),
+);
+
+adminResourcesRouter.get(
+  "/dashboard/flow-trend",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const dayNames = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"] as const;
+    const start = new Date();
+    start.setDate(start.getDate() - 6);
+    start.setHours(0, 0, 0, 0);
+    const end = new Date();
+    end.setHours(23, 59, 59, 999);
+
+    const entries = await prisma.journalEntry.findMany({
+      where: { createdAt: { gte: start, lte: end } },
+      include: { lines: true },
+    });
+
+    type Bucket = { day: string; deposits: number; withdrawals: number; key: string };
+    const buckets: Bucket[] = [];
+    for (let i = 0; i < 7; i++) {
+      const d = new Date(start);
+      d.setDate(start.getDate() + i);
+      const key = `${d.getFullYear()}-${String(d.getMonth() + 1).padStart(2, "0")}-${String(d.getDate()).padStart(2, "0")}`;
+      buckets.push({ key, day: dayNames[d.getDay()]!, deposits: 0, withdrawals: 0 });
+    }
+    const byKey = Object.fromEntries(buckets.map((b) => [b.key, b]));
+
+    for (const e of entries) {
+      const created = e.createdAt;
+      const key = `${created.getFullYear()}-${String(created.getMonth() + 1).padStart(2, "0")}-${String(created.getDate()).padStart(2, "0")}`;
+      const bucket = byKey[key];
+      if (!bucket) continue;
+      const abs = e.lines.reduce((s, l) => {
+        const a = l.amountKobo < 0n ? -l.amountKobo : l.amountKobo;
+        return a > s ? a : s;
+      }, 0n);
+      const millions = koboToNaira(abs) / 1_000_000;
+      if (e.kind === "DEPOSIT" || e.kind === "CALL_DEPOSIT") bucket.deposits += millions;
+      else if (e.kind === "WITHDRAWAL" || e.kind === "CALL_WITHDRAW") bucket.withdrawals += millions;
+    }
+
+    res.json({
+      data: buckets.map(({ day, deposits, withdrawals }) => ({
+        day,
+        deposits,
+        withdrawals,
+      })),
     });
   }),
 );
