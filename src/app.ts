@@ -16,6 +16,7 @@ import { settingsRouter } from "./routes/settings.js";
 import { adminRouter } from "./routes/admin.js";
 import { adminResourcesRouter } from "./routes/admin-resources.js";
 import { adminConsoleRouter } from "./routes/admin-console.js";
+import { appConfigRouter } from "./routes/app-config.js";
 import { giftsRouter } from "./routes/gifts.js";
 import { chatRouter } from "./routes/chat.js";
 import { webhooksRouter } from "./routes/webhooks.js";
@@ -108,6 +109,7 @@ export function createApp() {
   app.use("/v1/withdraw", withdrawRouter);
   app.use("/v1/portfolio", portfolioRouter);
   app.use("/v1/settings", settingsRouter);
+  app.use("/v1/app/config", appConfigRouter);
   app.use("/v1/chat", chatRouter);
   app.use("/v1/gifts", giftsRouter);
   app.use("/v1/admin", adminRouter);
