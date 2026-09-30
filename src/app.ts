@@ -26,12 +26,14 @@ import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import type { AuthRequest } from "./middleware/auth.js";
 import { requireAuth } from "./middleware/auth.js";
 import { env, monnifyUseMock, paystackUseMock, premblyUseMock, askAiLlmEnabled } from "./lib/env.js";
+import { requestContextMiddleware } from "./lib/request-context.js";
 
 export function createApp() {
   const app = express();
 
   app.use(helmet());
   app.use(cors({ origin: true, credentials: true }));
+  app.use(requestContextMiddleware);
 
   // Webhooks need raw body for signature verification — mount before JSON parser.
   app.use(

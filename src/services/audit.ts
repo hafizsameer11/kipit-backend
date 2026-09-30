@@ -1,5 +1,6 @@
 import type { Prisma } from "@prisma/client";
 import { prisma } from "../lib/prisma.js";
+import { getRequestMeta } from "../lib/request-context.js";
 
 export async function writeAudit(input: {
   actorUserId?: string;
@@ -11,7 +12,13 @@ export async function writeAudit(input: {
   after?: Prisma.InputJsonValue;
   ipAddress?: string;
   userAgent?: string;
+  /** When set, fills ipAddress/userAgent if those fields were omitted. */
+  req?: { ip?: string; get?: (name: string) => string | undefined };
 }) {
+  const ctx = getRequestMeta();
+  const ipAddress = input.ipAddress ?? input.req?.ip ?? ctx.ip;
+  const userAgent =
+    input.userAgent ?? input.req?.get?.("user-agent") ?? ctx.userAgent ?? undefined;
   return prisma.auditEvent.create({
     data: {
       actorUserId: input.actorUserId,
@@ -21,8 +28,8 @@ export async function writeAudit(input: {
       entityId: input.entityId,
       before: input.before,
       after: input.after,
-      ipAddress: input.ipAddress,
-      userAgent: input.userAgent,
+      ipAddress,
+      userAgent,
     },
   });
 }
