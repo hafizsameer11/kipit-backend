@@ -40,6 +40,15 @@ const BAND_MINIMUM_NAIRA: Record<string, number> = {
   "365+": 250_000,
 };
 
+const BAND_PRODUCT_NAMES: Record<string, string> = {
+  CALL: "Kipit Call Account",
+  "1-90": "Kipit Starter",
+  "91-120": "Kipit Fixed Income",
+  "121-180": "Kipit Target Savings",
+  "181-364": "Kipit Growth",
+  "365+": "Kipit Vault",
+};
+
 function minimumForBand(code: string, minDays: number) {
   if (BAND_MINIMUM_NAIRA[code] != null) return BAND_MINIMUM_NAIRA[code];
   if (minDays <= 0) return 5_000;
@@ -47,6 +56,10 @@ function minimumForBand(code: string, minDays: number) {
   if (minDays <= 180) return 50_000;
   if (minDays <= 364) return 100_000;
   return 250_000;
+}
+
+function productLabelForBand(code: string, fallback: string) {
+  return BAND_PRODUCT_NAMES[code] ?? fallback;
 }
 
 investRouter.get(
@@ -57,7 +70,7 @@ investRouter.get(
       data: bands.map((b) => ({
         id: b.id,
         code: b.code,
-        label: b.label,
+        label: productLabelForBand(b.code, b.label),
         minDays: b.minDays,
         maxDays: b.maxDays,
         rateBps: b.rateBps,
