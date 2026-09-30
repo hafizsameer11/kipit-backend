@@ -724,9 +724,44 @@ adminConsoleRouter.put(
 
 adminConsoleRouter.get(
   "/marketing/audience/count",
-  asyncHandler(async (req, res) => {
-    const total = await prisma.user.count();
-    res.json({ data: { total } });
+  asyncHandler(async (_req, res) => {
+    const [total, activeInvestors, neverInvested, tier0, maturingSoon] = await Promise.all([
+      prisma.user.count(),
+      prisma.user.count({
+        where: { placements: { some: { status: "ACTIVE" } } },
+      }),
+      prisma.user.count({
+        where: { placements: { none: {} } },
+      }),
+      prisma.user.count({ where: { kycTier: "TIER_0" } }),
+      prisma.user.count({
+        where: {
+          placements: {
+            some: {
+              status: "ACTIVE",
+              maturityDate: {
+                gte: new Date(),
+                lte: new Date(Date.now() + 7 * 86400000),
+              },
+            },
+          },
+        },
+      }),
+    ]);
+    const idleCash = Math.max(0, total - activeInvestors);
+    res.json({
+      data: {
+        total,
+        segments: {
+          "All customers": total,
+          "Active investors": activeInvestors,
+          "Idle cash holders": idleCash,
+          "Unverified signups": tier0,
+          "Maturing in 7 days": maturingSoon,
+          "Never invested": neverInvested,
+        },
+      },
+    });
   }),
 );
 
