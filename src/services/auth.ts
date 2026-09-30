@@ -26,10 +26,27 @@ export async function requestOtp(input: {
   purpose: OtpPurpose;
   userId?: string;
 }) {
+  const target = input.target.toLowerCase();
+
+  // #8 — Never email reset codes to addresses that are not registered.
+  // Still return a generic success payload so callers cannot enumerate accounts.
+  if (input.purpose === "PASSWORD_RESET" || input.purpose === "PIN_RESET") {
+    const existing = await prisma.user.findUnique({
+      where: { email: target },
+      select: { id: true },
+    });
+    if (!existing) {
+      return {
+        expiresAt: new Date(Date.now() + 10 * 60 * 1000),
+        sent: true,
+      };
+    }
+    input = { ...input, userId: input.userId ?? existing.id };
+  }
+
   const code = otpCode();
   const codeHash = await hashSecret(code);
   const expiresAt = new Date(Date.now() + 10 * 60 * 1000);
-  const target = input.target.toLowerCase();
 
   await prisma.otpChallenge.create({
     data: {
