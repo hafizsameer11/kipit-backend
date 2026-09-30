@@ -546,6 +546,7 @@ adminResourcesRouter.post(
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
         issuer: z.string().optional(),
         largeTicket: z.boolean().optional(),
+        details: z.record(z.unknown()).optional(),
       })
       .parse(req.body);
 
@@ -588,6 +589,7 @@ adminResourcesRouter.post(
         availability: body.availability ?? "OPEN",
         issuer: body.issuer,
         largeTicket: body.largeTicket ?? false,
+        details: body.details ?? undefined,
       },
       include: { category: true },
     });
@@ -596,6 +598,7 @@ adminResourcesRouter.post(
       action: "product.created",
       entityType: "Product",
       entityId: row.id,
+      after: { name: row.name, availability: row.availability },
     });
     res.status(201).json({
       data: {
@@ -606,6 +609,7 @@ adminResourcesRouter.post(
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
+        details: row.details,
       },
     });
   }),
@@ -627,6 +631,7 @@ adminResourcesRouter.patch(
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
         issuer: z.string().optional(),
         largeTicket: z.boolean().optional(),
+        details: z.record(z.unknown()).optional(),
       })
       .parse(req.body);
     const rateBps =
@@ -644,6 +649,7 @@ adminResourcesRouter.patch(
         availability: body.availability,
         issuer: body.issuer,
         largeTicket: body.largeTicket,
+        details: body.details,
       },
       include: { category: true },
     });
@@ -652,8 +658,19 @@ adminResourcesRouter.patch(
       action: "product.updated",
       entityType: "Product",
       entityId: row.id,
+      after: { name: row.name, availability: row.availability },
     });
-    res.json({ data: row });
+    res.json({
+      data: {
+        id: row.id,
+        name: row.name,
+        ratePct: row.rateBps / 100,
+        tenorDays: row.tenorDays,
+        minimum: koboToNaira(row.minimumKobo),
+        availability: row.availability,
+        details: row.details,
+      },
+    });
   }),
 );
 
