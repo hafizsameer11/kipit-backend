@@ -330,8 +330,14 @@ settingsRouter.patch(
         emailInvestments: z.boolean().optional(),
         emailMaturities: z.boolean().optional(),
         emailDigest: z.boolean().optional(),
-        pushProducts: z.boolean().optional(),
+        emailMarketing: z.boolean().optional(),
+        pushDeposits: z.boolean().optional(),
+        pushWithdrawals: z.boolean().optional(),
+        pushInvestments: z.boolean().optional(),
         pushMaturities: z.boolean().optional(),
+        pushProducts: z.boolean().optional(),
+        pushSecurity: z.boolean().optional(),
+        pushKyc: z.boolean().optional(),
       })
       .parse(req.body);
     const prefs = await prisma.notificationPref.upsert({
