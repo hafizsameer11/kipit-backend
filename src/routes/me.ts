@@ -76,6 +76,7 @@ meRouter.get(
                 0,
                 Math.ceil((next.maturityDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
               ),
+              tenorDays: next.tenorDays,
             }
           : null,
         holdings: placements.slice(0, 5).map((p) => ({
@@ -83,6 +84,7 @@ meRouter.get(
           name: p.name,
           amount: koboToNaira(p.principalKobo),
           ratePct: p.rateBps / 100,
+          tenorDays: p.tenorDays,
           maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
         })),
         feed,

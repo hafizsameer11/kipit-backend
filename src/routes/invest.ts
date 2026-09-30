@@ -30,6 +30,25 @@ function rateForTenorDays(
   return band;
 }
 
+/** Investment minimums (naira) by band code — mirrored in the mobile app as fallback. */
+const BAND_MINIMUM_NAIRA: Record<string, number> = {
+  CALL: 5_000,
+  "1-90": 10_000,
+  "91-120": 50_000,
+  "121-180": 50_000,
+  "181-364": 100_000,
+  "365+": 250_000,
+};
+
+function minimumForBand(code: string, minDays: number) {
+  if (BAND_MINIMUM_NAIRA[code] != null) return BAND_MINIMUM_NAIRA[code];
+  if (minDays <= 0) return 5_000;
+  if (minDays <= 90) return 10_000;
+  if (minDays <= 180) return 50_000;
+  if (minDays <= 364) return 100_000;
+  return 250_000;
+}
+
 investRouter.get(
   "/rates",
   asyncHandler(async (_req, res) => {
@@ -43,6 +62,7 @@ investRouter.get(
         maxDays: b.maxDays,
         rateBps: b.rateBps,
         ratePct: b.rateBps / 100,
+        minimum: minimumForBand(b.code, b.minDays),
       })),
     });
   }),
@@ -265,13 +285,17 @@ investRouter.get(
   asyncHandler(async (req: AuthRequest, res) => {
     const rules = await prisma.autoInvestRule.findMany({ where: { userId: req.userId! } });
     res.json({
-      data: rules.map((r) => ({
-        id: r.id,
-        label: r.label,
-        amount: koboToNaira(r.amountKobo),
-        dayOfMonth: r.dayOfMonth,
-        active: r.active,
-      })),
+      data: rules.map((r) => {
+        const freqMatch = r.label.match(/^(Weekly|Every 2 weeks|Monthly)\s*·\s*(.*)$/);
+        return {
+          id: r.id,
+          label: freqMatch ? freqMatch[2] : r.label,
+          amount: koboToNaira(r.amountKobo),
+          dayOfMonth: r.dayOfMonth,
+          active: r.active,
+          frequency: freqMatch ? freqMatch[1] : "Monthly",
+        };
+      }),
     });
   }),
 );
@@ -286,17 +310,19 @@ investRouter.post(
         label: z.string().min(1),
         amount: z.number().positive(),
         dayOfMonth: z.number().int().min(1).max(28),
+        frequency: z.enum(["Weekly", "Every 2 weeks", "Monthly"]).optional(),
       })
       .parse(req.body);
+    const label = body.frequency ? `${body.frequency} · ${body.label}` : body.label;
     const rule = await prisma.autoInvestRule.create({
       data: {
         userId: req.userId!,
-        label: body.label,
+        label,
         amountKobo: nairaToKobo(body.amount),
         dayOfMonth: body.dayOfMonth,
       },
     });
-    res.status(201).json({ data: { id: rule.id } });
+    res.status(201).json({ data: { id: rule.id, frequency: body.frequency ?? "Monthly" } });
   }),
 );
 

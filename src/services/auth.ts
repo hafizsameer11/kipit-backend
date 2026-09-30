@@ -58,7 +58,7 @@ export async function requestOtp(input: {
   };
 }
 
-export async function verifyOtp(input: {
+async function findOtpChallenge(input: {
   target: string;
   purpose: OtpPurpose;
   code: string;
@@ -87,6 +87,25 @@ export async function verifyOtp(input: {
     });
     throw new AppError(400, "Invalid OTP", "OTP_INVALID");
   }
+
+  return challenge;
+}
+
+/** Validate OTP without consuming — for multi-step reset flows. */
+export async function checkOtp(input: {
+  target: string;
+  purpose: OtpPurpose;
+  code: string;
+}) {
+  return findOtpChallenge(input);
+}
+
+export async function verifyOtp(input: {
+  target: string;
+  purpose: OtpPurpose;
+  code: string;
+}) {
+  const challenge = await findOtpChallenge(input);
 
   await prisma.otpChallenge.update({
     where: { id: challenge.id },

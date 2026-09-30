@@ -109,11 +109,55 @@ authRouter.post(
         target: z.string().min(3),
         purpose: z.enum(["SIGNUP", "LOGIN", "PASSWORD_RESET", "PIN_RESET"]),
         code: z.string().min(4).max(8),
+        /** When true, validate without consuming so a later reset can still use the code. */
+        peek: z.boolean().optional(),
       })
       .parse(req.body);
 
-    await verifyOtp(body);
+    if (body.peek) {
+      const { checkOtp } = await import("../services/auth.js");
+      await checkOtp({ target: body.target, purpose: body.purpose, code: body.code });
+    } else {
+      await verifyOtp(body);
+    }
     res.json({ data: { verified: true } });
+  }),
+);
+
+authRouter.get(
+  "/email-available",
+  asyncHandler(async (req, res) => {
+    const email = String(req.query.email || "")
+      .trim()
+      .toLowerCase();
+    if (!email || !email.includes("@")) {
+      res.status(400).json({ error: { message: "Valid email required", code: "EMAIL_INVALID" } });
+      return;
+    }
+    const existing = await prisma.user.findUnique({ where: { email } });
+    res.json({ data: { available: !existing } });
+  }),
+);
+
+authRouter.get(
+  "/referral/:code",
+  asyncHandler(async (req, res) => {
+    const code = String(req.params.code || "")
+      .trim()
+      .toUpperCase();
+    if (code.length < 4) {
+      res.json({ data: { valid: false } });
+      return;
+    }
+    const user = await prisma.user.findFirst({
+      where: { referralCode: { equals: code, mode: "insensitive" } },
+      select: { firstName: true, referralCode: true },
+    });
+    res.json({
+      data: user
+        ? { valid: true, code: user.referralCode, inviterFirstName: user.firstName }
+        : { valid: false },
+    });
   }),
 );
 
