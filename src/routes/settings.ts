@@ -13,6 +13,7 @@ import {
   verifyTransactionPin,
 } from "../services/auth.js";
 import { writeAudit } from "../services/audit.js";
+import { createUserNotification } from "../services/notify.js";
 import {
   isOwnSupportUploadUrl,
   saveSupportAttachment,
@@ -182,6 +183,13 @@ settingsRouter.post(
     }
     await verifyTransactionPin(req.userId!, body.currentPin);
     await setTransactionPin(req.userId!, body.newPin);
+    await createUserNotification({
+      userId: req.userId!,
+      title: "Transaction PIN changed",
+      body: "Your Kipit transaction PIN was updated. If this wasn’t you, reset your PIN and contact support.",
+      href: "/settings/security",
+      pushKind: "security",
+    }).catch(() => undefined);
     res.json({ data: { ok: true } });
   }),
 );
@@ -274,6 +282,13 @@ settingsRouter.post(
       entityType: "User",
       entityId: user.id,
     });
+    await createUserNotification({
+      userId: user.id,
+      title: "Transaction PIN reset",
+      body: "Your Kipit transaction PIN was reset successfully. If this wasn’t you, contact support immediately.",
+      href: "/settings/security",
+      pushKind: "security",
+    }).catch(() => undefined);
     res.json({ data: { ok: true } });
   }),
 );
@@ -531,14 +546,13 @@ settingsRouter.post(
         },
       },
     });
-    await prisma.notification.create({
-      data: {
-        userId: req.userId!,
-        title: "Support ticket received",
-        body: `We've logged “${ticket.subject}”. Our team typically replies within one business day.`,
-        href: `/settings/help/tickets/${ticket.id}`,
-      },
-    });
+    await createUserNotification({
+      userId: req.userId!,
+      title: "Support ticket received",
+      body: `We've logged “${ticket.subject}”. Our team typically replies within one business day.`,
+      href: `/settings/help/tickets/${ticket.id}`,
+      pushKind: "security",
+    }).catch(() => undefined);
     res.status(201).json({
       data: {
         id: ticket.id,

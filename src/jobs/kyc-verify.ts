@@ -3,7 +3,7 @@ import { sendBrandedNoticeEmail } from "../services/email.js";
 import { writeAudit } from "../services/audit.js";
 import { verifyBvnWithPrembly, verifyNinWithPrembly } from "../services/prembly.js";
 import { fuzzyScore, formatPremblyName } from "../services/kyc.js";
-import { sendPushToUser } from "../services/push.js";
+import { createUserNotification } from "../services/notify.js";
 
 const MAX_ATTEMPTS = 8;
 const BATCH = 25;
@@ -16,21 +16,13 @@ async function notifyUser(input: {
   body: string;
   href?: string;
 }) {
-  await prisma.notification.create({
-    data: {
-      userId: input.userId,
-      title: input.title,
-      body: input.body,
-      href: input.href,
-    },
-  });
-  await sendPushToUser({
+  await createUserNotification({
     userId: input.userId,
     title: input.title,
     body: input.body,
     href: input.href,
-    kind: "kyc",
-  }).catch(() => undefined);
+    pushKind: "kyc",
+  });
   if (input.email) {
     await sendBrandedNoticeEmail({
       to: input.email,

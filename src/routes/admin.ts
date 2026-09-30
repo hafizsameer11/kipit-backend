@@ -940,14 +940,16 @@ adminRouter.post(
         providerRef: transfer.transferCode,
       },
     });
-    await prisma.notification.create({
-      data: {
-        userId: row.userId,
-        title: "Withdrawal successful",
-        body: `Your withdrawal of ₦${koboToNaira(row.amountKobo).toLocaleString()} was paid out.`,
-        href: "/withdraw/tracker",
-      },
-    });
+    await notifyCustomer({
+      userId: row.userId,
+      title: "Withdrawal successful",
+      body: `Your withdrawal of ₦${koboToNaira(row.amountKobo).toLocaleString()} was paid out.`,
+      href: "/withdraw/tracker",
+      emailKind: "withdrawal_result",
+      amountNaira: koboToNaira(row.amountKobo),
+      emailDetail: "Paid to your bank account",
+      pushKind: "withdrawal",
+    }).catch(() => undefined);
     await writeAudit({
       actorAdminId: req.adminId,
       action: "withdrawal.successful",
@@ -989,14 +991,16 @@ adminRouter.post(
       },
     });
 
-    await prisma.notification.create({
-      data: {
-        userId: row.userId,
-        title: "Withdrawal declined",
-        body: body.reason,
-        href: "/withdraw/tracker",
-      },
-    });
+    await notifyCustomer({
+      userId: row.userId,
+      title: "Withdrawal declined",
+      body: body.reason,
+      href: "/withdraw/tracker",
+      emailKind: "withdrawal_result",
+      amountNaira: koboToNaira(row.amountKobo),
+      emailDetail: body.reason,
+      pushKind: "withdrawal",
+    }).catch(() => undefined);
 
     await writeAudit({
       actorAdminId: req.adminId,
@@ -1301,14 +1305,13 @@ adminRouter.patch(
       await prisma.supportTicketMessage.create({
         data: { ticketId: existing.id, author: "SUPPORT", body: replyText },
       });
-      await prisma.notification.create({
-        data: {
-          userId: existing.userId,
-          title: "Support replied",
-          body: `New reply on “${existing.subject}”.`,
-          href: `/settings/help/tickets/${existing.id}`,
-        },
-      });
+      await notifyCustomer({
+        userId: existing.userId,
+        title: "Support replied",
+        body: `New reply on “${existing.subject}”.`,
+        href: `/settings/help/tickets/${existing.id}`,
+        pushKind: "security",
+      }).catch(() => undefined);
     }
 
     const row = await prisma.supportTicket.update({

@@ -302,6 +302,10 @@ export async function loginWithPassword(input: {
     throw new AppError(401, "Invalid email or password", "AUTH_FAILED");
   }
 
+  const priorActive = await prisma.session.count({
+    where: { userId: user.id, revokedAt: null },
+  });
+
   const session = await createSession({
     userId: user.id,
     deviceName: input.deviceName,
@@ -317,6 +321,19 @@ export async function loginWithPassword(input: {
     ipAddress: input.ipAddress,
     userAgent: input.userAgent,
   });
+
+  // Security alert only when another session was already active (new / second device).
+  if (priorActive > 0) {
+    const { createUserNotification } = await import("./notify.js");
+    const deviceLabel = input.deviceName?.trim() || "another device";
+    await createUserNotification({
+      userId: user.id,
+      title: "New sign-in",
+      body: `Your Kipit account was signed in on ${deviceLabel}. If this wasn’t you, change your password and review sessions.`,
+      href: "/settings/security",
+      pushKind: "security",
+    }).catch(() => undefined);
+  }
 
   {
     const { claimPendingGiftsForUser } = await import("./gifts.js");
@@ -410,6 +427,14 @@ export async function resetPasswordWithOtp(input: {
     entityType: "User",
     entityId: user.id,
   });
+  const { createUserNotification } = await import("./notify.js");
+  await createUserNotification({
+    userId: user.id,
+    title: "Password changed",
+    body: "Your Kipit password was reset. All other sessions were signed out. If this wasn’t you, contact support immediately.",
+    href: "/settings/security",
+    pushKind: "security",
+  }).catch(() => undefined);
   return { ok: true as const };
 }
 

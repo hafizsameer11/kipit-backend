@@ -128,16 +128,21 @@ export async function sendOpsWithdrawalAlert(input: {
 }
 
 /** In-app + optional email (respects NotificationPref). */
-export async function notifyCustomer(input: {
+/**
+ * Single entry for in-app + device push (and optional txn email).
+ * Always respects NotificationPref push* / email* toggles.
+ */
+export async function createUserNotification(input: {
   userId: string;
   title: string;
   body: string;
   href?: string;
+  pushKind?: PushKind;
   emailKind?: "deposit" | "withdrawal" | "investment" | "withdrawal_result";
   amountNaira?: number;
   emailDetail?: string;
-  /** Device push category — defaults from emailKind when omitted. */
-  pushKind?: PushKind;
+  /** Skip device push (rare). */
+  skipPush?: boolean;
 }) {
   await prisma.notification.create({
     data: {
@@ -158,13 +163,15 @@ export async function notifyCustomer(input: {
           ? "investment"
           : "general");
 
-  await sendPushToUser({
-    userId: input.userId,
-    title: input.title,
-    body: input.body,
-    href: input.href,
-    kind: pushKind,
-  }).catch((err) => console.warn("[notify] push failed", err));
+  if (!input.skipPush) {
+    await sendPushToUser({
+      userId: input.userId,
+      title: input.title,
+      body: input.body,
+      href: input.href,
+      kind: pushKind,
+    }).catch((err) => console.warn("[notify] push failed", err));
+  }
 
   if (!input.emailKind || input.amountNaira == null) return;
 
@@ -190,4 +197,18 @@ export async function notifyCustomer(input: {
     amountNaira: input.amountNaira,
     detail: input.emailDetail,
   }).catch((err) => console.warn("[notify] email failed", err));
+}
+
+/** @deprecated Prefer createUserNotification — kept as alias for existing imports. */
+export async function notifyCustomer(input: {
+  userId: string;
+  title: string;
+  body: string;
+  href?: string;
+  emailKind?: "deposit" | "withdrawal" | "investment" | "withdrawal_result";
+  amountNaira?: number;
+  emailDetail?: string;
+  pushKind?: PushKind;
+}) {
+  return createUserNotification(input);
 }

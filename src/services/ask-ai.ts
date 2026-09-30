@@ -508,14 +508,14 @@ async function runTool(
     const ticket = await prisma.supportTicket.create({
       data: { userId, category, subject, body: detail },
     });
-    await prisma.notification.create({
-      data: {
-        userId,
-        title: "Support ticket received",
-        body: `We've logged “${ticket.subject}”. Our team typically replies within one business day.`,
-        href: `/settings/help/tickets/${ticket.id}`,
-      },
-    });
+    const { createUserNotification } = await import("./notify.js");
+    await createUserNotification({
+      userId,
+      title: "Support ticket received",
+      body: `We've logged “${ticket.subject}”. Our team typically replies within one business day.`,
+      href: `/settings/help/tickets/${ticket.id}`,
+      pushKind: "security",
+    }).catch(() => undefined);
     blocks.push({
       kind: "chips",
       options: [
