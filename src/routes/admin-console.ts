@@ -133,7 +133,7 @@ export async function getPublicAppConfig() {
     ...(settings as { maintenance?: { enabled?: boolean; message?: string } }).maintenance,
   };
   const flags = (settings as { flags?: { id: string; enabled: boolean }[] }).flags ?? DEFAULT_SETTINGS.flags;
-  const askAiFlag = flags.find((f) => f.id === "ff-ai");
+  const flagOn = (id: string, fallback = true) => flags.find((f) => f.id === id)?.enabled ?? fallback;
   return {
     support: {
       phone: String(support.phone || "").trim(),
@@ -145,17 +145,34 @@ export async function getPublicAppConfig() {
       message: String(maintenance.message || DEFAULT_SETTINGS.maintenance.message),
     },
     featureFlags: {
-      askAi: askAiFlag?.enabled ?? true,
+      askAi: flagOn("ff-ai"),
+      autoInvest: flagOn("ff-auto"),
+      giftInvest: flagOn("ff-gift"),
+      explore: flagOn("ff-explore"),
     },
   };
 }
 
-function assertNonNegativeNumericRows(rows: { value: string }[] | undefined, label: string) {
+function assertNonNegativeNumericRows(rows: { value: string; label?: string }[] | undefined, label: string) {
   if (!rows) return;
   for (const row of rows) {
     const n = Number(String(row.value).replace(/,/g, ""));
     if (!Number.isFinite(n) || n < 0) {
-      throw new AppError(400, `${label}: "${row.label}" must be a number ≥ 0`, "INVALID_SETTING");
+      throw new AppError(400, `${label}: "${row.label ?? "value"}" must be a number ≥ 0`, "INVALID_SETTING");
+    }
+  }
+}
+
+function assertCutoffTimes(rows: { value: string; label?: string }[] | undefined) {
+  if (!rows) return;
+  for (const row of rows) {
+    const v = String(row.value).trim();
+    if (!/^\d{1,2}:\d{2}$/.test(v)) {
+      throw new AppError(400, `Cut-offs: "${row.label ?? "value"}" must be HH:MM`, "INVALID_SETTING");
+    }
+    const [h, m] = v.split(":").map(Number);
+    if ((h ?? 99) > 23 || (m ?? 99) > 59) {
+      throw new AppError(400, `Cut-offs: "${row.label ?? "value"}" must be a valid time`, "INVALID_SETTING");
     }
   }
 }
@@ -386,6 +403,7 @@ adminConsoleRouter.put(
       : currentSupport;
     assertNonNegativeNumericRows(body.fees, "Fees");
     assertNonNegativeNumericRows(body.limits, "Limits");
+    assertCutoffTimes(body.cutoffs);
     const next = {
       fees: body.fees ?? current.fees,
       limits: body.limits ?? current.limits,
