@@ -10,11 +10,13 @@ import { koboToNaira, nairaToKobo } from "../lib/crypto.js";
 import { verifyTransactionPin } from "../services/auth.js";
 import { debitWallet, ensureSystemAccount, interestForPeriod } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
+import { sendGiftInviteEmail } from "../services/email.js";
 import {
   claimGiftForUser,
   claimPendingGiftsForUser,
   giftClaimLink,
   giftPhoneVariants,
+  normalizeGiftEmail,
   publicGiftPreview,
 } from "../services/gifts.js";
 
@@ -38,6 +40,7 @@ function mapGiftRow(
     status: string;
     claimCode: string;
     recipientPhone: string | null;
+    recipientEmail: string | null;
     recipientName: string | null;
     tenorDays: number;
     senderId: string;
@@ -49,17 +52,23 @@ function mapGiftRow(
       principalKobo: bigint;
       accruedKobo: bigint;
     } | null;
-    recipient: { firstName: string; surname: string; phone: string | null } | null;
+    recipient: { firstName: string; surname: string; phone: string | null; email: string | null } | null;
     sender?: { firstName: string; surname: string } | null;
   },
   viewerId: string,
 ) {
+  const contact =
+    g.recipientEmail ??
+    g.recipientPhone ??
+    g.recipient?.email ??
+    g.recipient?.phone ??
+    "—";
   return {
     id: g.id,
     recipient: g.recipient
       ? `${g.recipient.firstName} ${g.recipient.surname}`
-      : g.recipientName ?? g.recipientPhone ?? "Pending recipient",
-    phone: g.recipientPhone ?? g.recipient?.phone ?? "—",
+      : g.recipientName ?? g.recipientEmail ?? g.recipientPhone ?? "Pending recipient",
+    phone: contact,
     product: g.placement?.name ?? "Gift investment",
     tenor: `${g.placement?.tenorDays ?? g.tenorDays} days`,
     rate: g.placement ? `${(g.placement.rateBps / 100).toFixed(2)}%` : "—",
@@ -173,11 +182,16 @@ giftsRouter.post(
     const body = z
       .object({
         amount: z.number().positive(),
-        recipientPhone: z.string().min(7),
+        recipientPhone: z.string().min(7).optional(),
+        recipientEmail: z.string().email().optional(),
         recipientName: z.string().optional(),
         message: z.string().max(280).optional(),
         tenorDays: z.number().int().positive().optional(),
         pin: z.string().min(4),
+      })
+      .refine((d) => Boolean(d.recipientPhone?.trim() || d.recipientEmail?.trim()), {
+        message: "Add a recipient phone number or email",
+        path: ["recipientPhone"],
       })
       .parse(req.body);
 
@@ -185,24 +199,33 @@ giftsRouter.post(
     const amountKobo = nairaToKobo(body.amount);
     const claimCode = `GFT-${nanoid(8).toUpperCase()}`;
     const tenorDays = body.tenorDays && body.tenorDays > 0 ? body.tenorDays : 90;
-    const phone =
-      giftPhoneVariants(body.recipientPhone)[0] ?? body.recipientPhone.replace(/\D/g, "");
+    const email = normalizeGiftEmail(body.recipientEmail);
+    const phoneRaw = body.recipientPhone?.trim() || "";
+    const phoneDigits = phoneRaw.replace(/\D/g, "");
+    const phone = phoneRaw
+      ? giftPhoneVariants(phoneRaw)[0] ?? (phoneDigits.length >= 7 ? phoneDigits : null)
+      : null;
+    if (!email && (!phone || phone.length < 7)) {
+      throw new AppError(400, "Add a valid recipient phone number or email", "RECIPIENT_INVALID");
+    }
 
+    const contactLabel = email || phone || "recipient";
     const suspense = await ensureSystemAccount("SYSTEM_SUSPENSE");
     await debitWallet({
       userId: req.userId!,
       amountKobo,
       kind: "WITHDRAWAL",
       idempotencyKey: `gift-${claimCode}`,
-      description: `Gift investment to ${phone}`,
+      description: `Gift investment to ${contactLabel}`,
       creditAccountId: suspense.id,
-      metadata: { claimCode, gift: true, tenorDays },
+      metadata: { claimCode, gift: true, tenorDays, recipientEmail: email, recipientPhone: phone },
     });
 
     const gift = await prisma.gift.create({
       data: {
         senderId: req.userId!,
         recipientPhone: phone,
+        recipientEmail: email,
         recipientName: body.recipientName?.trim() || null,
         amountKobo,
         message: body.message,
@@ -213,11 +236,20 @@ giftsRouter.post(
       },
     });
 
-    // If recipient already has a Kipit account with this phone, claim immediately.
-    const variants = giftPhoneVariants(phone);
-    const existing = await prisma.user.findFirst({
-      where: { phone: { in: variants }, id: { not: req.userId! } },
-    });
+    // Prefer matching an existing Kipit user by email, then phone.
+    let existing =
+      email
+        ? await prisma.user.findFirst({
+            where: { email, id: { not: req.userId! } },
+          })
+        : null;
+    if (!existing && phone) {
+      const variants = giftPhoneVariants(phone);
+      existing = await prisma.user.findFirst({
+        where: { phone: { in: variants }, id: { not: req.userId! } },
+      });
+    }
+
     let claimedPlacementId: string | null = null;
     if (existing) {
       try {
@@ -228,15 +260,37 @@ giftsRouter.post(
       }
     }
 
+    const claimLink = giftClaimLink(gift.claimCode);
+    const inviteEmail = email || existing?.email || null;
+    if (!claimedPlacementId && inviteEmail) {
+      const sender = await prisma.user.findUnique({
+        where: { id: req.userId! },
+        select: { firstName: true },
+      });
+      await sendGiftInviteEmail({
+        to: inviteEmail,
+        recipientName: body.recipientName,
+        senderFirstName: sender?.firstName || "Someone",
+        amountNaira: body.amount,
+        claimCode: gift.claimCode,
+        claimLink,
+        message: body.message,
+      }).catch((err) => console.warn("[gift-invite-email]", err));
+    }
+
     await writeAudit({
       actorUserId: req.userId,
       action: "gift.created",
       entityType: "Gift",
       entityId: gift.id,
-      after: { amount: body.amount, claimCode, autoClaimed: Boolean(claimedPlacementId) },
+      after: {
+        amount: body.amount,
+        claimCode,
+        autoClaimed: Boolean(claimedPlacementId),
+        invited: Boolean(!claimedPlacementId && inviteEmail),
+      },
     });
 
-    const claimLink = giftClaimLink(gift.claimCode);
     res.status(201).json({
       data: {
         id: gift.id,
@@ -245,6 +299,7 @@ giftsRouter.post(
         amount: body.amount,
         status: claimedPlacementId ? "Claimed" : "Pending",
         tenorDays,
+        invitedEmail: !claimedPlacementId && inviteEmail ? inviteEmail : null,
       },
     });
   }),

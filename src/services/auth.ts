@@ -185,8 +185,8 @@ export async function registerUser(input: {
     }).catch(() => undefined);
   }
 
-  // Non-app recipients: gift lands in portfolio once they register with the gifted phone.
-  if (user.phone) {
+  // Non-app recipients: gift lands in portfolio once they register with gifted phone/email.
+  {
     const { claimPendingGiftsForUser } = await import("./gifts.js");
     await claimPendingGiftsForUser(user.id).catch((err) =>
       console.warn("[gift-auto-claim]", err),
@@ -301,7 +301,7 @@ export async function loginWithPassword(input: {
     userAgent: input.userAgent,
   });
 
-  if (user.phone) {
+  {
     const { claimPendingGiftsForUser } = await import("./gifts.js");
     await claimPendingGiftsForUser(user.id).catch((err) =>
       console.warn("[gift-auto-claim]", err),
