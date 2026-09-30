@@ -836,8 +836,28 @@ adminResourcesRouter.get(
         messageCount: s._count.messages,
         firstUserMessage: firstBySession.get(s.id) ?? null,
         lastMessage: s.messages[0]?.content ?? null,
+        flagged: s.flagged,
       })),
     });
+  }),
+);
+
+adminResourcesRouter.patch(
+  "/chat/sessions/:id",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z.object({ flagged: z.boolean() }).parse(req.body);
+    const row = await prisma.chatSession.update({
+      where: { id: String(req.params.id) },
+      data: { flagged: body.flagged },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: body.flagged ? "chat.flagged" : "chat.unflagged",
+      entityType: "ChatSession",
+      entityId: row.id,
+    });
+    res.json({ data: { id: row.id, flagged: row.flagged } });
   }),
 );
 
@@ -900,7 +920,7 @@ adminResourcesRouter.get(
       const intent = classifyIntent(firstUser);
       intentCounts[intent] = (intentCounts[intent] ?? 0) + 1;
       const outcome = classifyOutcome(s.messages);
-      if (outcome === "escalated") flagged += 1;
+      if (s.flagged || outcome === "escalated") flagged += 1;
       if (outcome === "handoff") {
         const label =
           /fixed|90|plan/.test(firstUser.toLowerCase())
@@ -1019,6 +1039,7 @@ adminResourcesRouter.get(
         id: s.id,
         user: { id: s.userId, name: `${s.user.firstName} ${s.user.surname}`, email: s.user.email },
         createdAt: s.createdAt,
+        flagged: s.flagged,
         messages: s.messages.map((m) => ({
           id: m.id,
           role: m.role,

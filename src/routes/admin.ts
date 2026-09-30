@@ -18,7 +18,7 @@ import {
   type AdminRequest,
 } from "../middleware/admin.js";
 import { listSignupDropoffs } from "../services/signup-funnel.js";
-import { sendWelcomeEmail, notifyCustomer } from "../services/notify.js";
+import { sendWelcomeEmail, notifyCustomer, sendAdminInviteEmail } from "../services/notify.js";
 import { requestOtp, verifyOtp } from "../services/auth.js";
 import { productDetailsSchema, toPrismaJson, asProductDetails } from "../lib/product-details.js";
 import jwt from "jsonwebtoken";
@@ -59,6 +59,18 @@ function fmtRelative(date: Date) {
 
 const adminRoleSchema = z.enum(["SUPER", "GLOBAL", "COMPLIANCE", "OPERATIONS", "MARKETING"]);
 
+function assertAdminPasswordRules(password: string) {
+  if (password.length < 12) {
+    throw new AppError(400, "Password must be at least 12 characters", "PASSWORD_WEAK");
+  }
+  if (!/\d/.test(password)) {
+    throw new AppError(400, "Password must include a number", "PASSWORD_WEAK");
+  }
+  if (!/[^A-Za-z0-9]/.test(password)) {
+    throw new AppError(400, "Password must include a symbol", "PASSWORD_WEAK");
+  }
+}
+
 export const adminRouter = Router();
 
 adminRouter.post(
@@ -81,6 +93,13 @@ adminRouter.post(
       env.JWT_ACCESS_SECRET,
       { expiresIn: "8h" },
     );
+
+    if (admin.invitePending) {
+      await prisma.adminUser.update({
+        where: { id: admin.id },
+        data: { invitePending: false },
+      });
+    }
 
     await writeAudit({
       actorAdminId: admin.id,
@@ -1158,11 +1177,14 @@ adminRouter.get(
     const bands = await prisma.rateBand.findMany({ orderBy: { minDays: "asc" } });
     const placements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
-      select: { principalKobo: true, tenorDays: true },
+      select: { kind: true, principalKobo: true, tenorDays: true },
     });
     res.json({
       data: bands.map((b) => {
+        const isCallBand = b.code.toUpperCase() === "CALL" || (b.minDays === 0 && b.maxDays === 0);
         const matching = placements.filter((p) => {
+          if (isCallBand) return p.kind === "CALL";
+          if (p.kind === "CALL") return false;
           const days = p.tenorDays ?? 0;
           if (b.maxDays == null) return days >= b.minDays;
           return days >= b.minDays && days <= b.maxDays;
@@ -1499,7 +1521,7 @@ adminRouter.post(
         slug: z.string().min(2).optional(),
         name: z.string().min(2),
         blurb: z.string().min(2).optional(),
-        description: z.string().optional(),
+        description: z.string().min(10).optional(),
         rateBps: z.number().int().positive().optional(),
         ratePct: z.number().positive().optional(),
         tenorDays: z.number().int().positive(),
@@ -1703,7 +1725,17 @@ adminRouter.get(
   "/team",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    const rows = await prisma.adminUser.findMany({ orderBy: { createdAt: "asc" } });
+    const rows = await prisma.adminUser.findMany({
+      orderBy: { createdAt: "asc" },
+      include: {
+        sessions: {
+          where: { revokedAt: null },
+          orderBy: { lastActiveAt: "desc" },
+          take: 1,
+          select: { lastActiveAt: true },
+        },
+      },
+    });
     res.json({
       data: rows.map((a) => ({
         id: a.id,
@@ -1711,7 +1743,13 @@ adminRouter.get(
         name: a.name,
         role: a.role,
         active: a.active,
+        department: a.department,
+        phone: a.phone,
+        invitePending: a.invitePending,
+        require2fa: a.require2fa,
+        makerChecker: a.makerChecker,
         createdAt: a.createdAt,
+        lastActiveAt: a.sessions[0]?.lastActiveAt ?? null,
       })),
     });
   }),
@@ -1728,21 +1766,42 @@ adminRouter.post(
         role: adminRoleSchema,
         password: z.string().min(8).optional(),
         pin: z.string().length(4).regex(/^\d{4}$/).optional(),
+        department: z.string().max(120).optional(),
+        phone: z.string().max(32).optional(),
+        require2fa: z.boolean().optional(),
+        makerChecker: z.boolean().optional(),
       })
       .parse(req.body);
+    const email = body.email.toLowerCase().trim();
+    const existing = await prisma.adminUser.findUnique({ where: { email } });
+    if (existing) throw new AppError(409, "Email already in use", "EMAIL_EXISTS");
+
     const tempPassword = body.password ?? `Kp${nanoid(10)}!`;
+    assertAdminPasswordRules(tempPassword);
     const tempPin = body.pin ?? String(1000 + Math.floor(Math.random() * 9000));
     const passwordHash = await hashSecret(tempPassword);
     const pinHash = await hashSecret(tempPin);
     const row = await prisma.adminUser.create({
       data: {
-        email: body.email.toLowerCase(),
-        name: body.name,
+        email,
+        name: body.name.trim(),
         role: body.role,
         passwordHash,
         pinHash,
+        department: body.department?.trim() || null,
+        phone: body.phone?.replace(/\D/g, "") || null,
+        invitePending: true,
+        require2fa: body.require2fa ?? true,
+        makerChecker: body.makerChecker ?? false,
+        active: true,
       },
     });
+    await sendAdminInviteEmail({
+      to: email,
+      name: row.name,
+      tempPassword,
+      role: row.role,
+    }).catch((err) => console.warn("[admin-invite-email]", err));
     await writeAudit({
       actorAdminId: req.adminId,
       action: "admin.created",
@@ -1756,6 +1815,11 @@ adminRouter.post(
         name: row.name,
         role: row.role,
         active: row.active,
+        department: row.department,
+        phone: row.phone,
+        invitePending: row.invitePending,
+        require2fa: row.require2fa,
+        makerChecker: row.makerChecker,
         tempPassword,
         tempPin,
       },
@@ -1772,11 +1836,20 @@ adminRouter.patch(
         name: z.string().optional(),
         role: adminRoleSchema.optional(),
         active: z.boolean().optional(),
+        department: z.string().optional(),
+        phone: z.string().optional(),
+        require2fa: z.boolean().optional(),
+        makerChecker: z.boolean().optional(),
+        invitePending: z.boolean().optional(),
       })
       .parse(req.body);
+    const data = {
+      ...body,
+      ...(body.phone !== undefined ? { phone: body.phone.replace(/\D/g, "") || null } : {}),
+    };
     const row = await prisma.adminUser.update({
       where: { id: String(req.params.id) },
-      data: body,
+      data,
     });
     await writeAudit({
       actorAdminId: req.adminId,
@@ -1786,8 +1859,169 @@ adminRouter.patch(
       after: body,
     });
     res.json({
-      data: { id: row.id, email: row.email, name: row.name, role: row.role, active: row.active },
+      data: {
+        id: row.id,
+        email: row.email,
+        name: row.name,
+        role: row.role,
+        active: row.active,
+        department: row.department,
+        phone: row.phone,
+        invitePending: row.invitePending,
+        require2fa: row.require2fa,
+        makerChecker: row.makerChecker,
+      },
     });
+  }),
+);
+
+adminRouter.post(
+  "/team/:id/reset-password",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const admin = await prisma.adminUser.findUnique({ where: { id: String(req.params.id) } });
+    if (!admin) throw new AppError(404, "Admin not found", "NOT_FOUND");
+    const tempPassword = `Kp${nanoid(10)}!`;
+    assertAdminPasswordRules(tempPassword);
+    await prisma.adminUser.update({
+      where: { id: admin.id },
+      data: { passwordHash: await hashSecret(tempPassword), invitePending: true },
+    });
+    await sendAdminInviteEmail({
+      to: admin.email,
+      name: admin.name,
+      tempPassword,
+      role: admin.role,
+    }).catch((err) => console.warn("[admin-reset-email]", err));
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "admin.password_reset",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+    res.json({ data: { sent: true } });
+  }),
+);
+
+adminRouter.post(
+  "/team/:id/reset-2fa",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const admin = await prisma.adminUser.findUnique({ where: { id: String(req.params.id) } });
+    if (!admin) throw new AppError(404, "Admin not found", "NOT_FOUND");
+    await prisma.adminUser.update({
+      where: { id: admin.id },
+      data: { pinHash: null, require2fa: true },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "admin.2fa_reset",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+    res.json({ data: { reset: true } });
+  }),
+);
+
+adminRouter.delete(
+  "/team/:id",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const id = String(req.params.id);
+    if (id === req.adminId) {
+      throw new AppError(400, "You cannot remove your own account", "SELF_DELETE");
+    }
+    const admin = await prisma.adminUser.findUnique({ where: { id } });
+    if (!admin) throw new AppError(404, "Admin not found", "NOT_FOUND");
+    await prisma.adminSession.updateMany({
+      where: { adminId: id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await prisma.adminUser.update({
+      where: { id },
+      data: { active: false, invitePending: false },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "admin.removed",
+      entityType: "AdminUser",
+      entityId: id,
+    });
+    res.status(204).send();
+  }),
+);
+
+adminRouter.get(
+  "/me",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    res.json({
+      data: {
+        id: admin.id,
+        email: admin.email,
+        name: admin.name,
+        role: admin.role,
+        phone: admin.phone,
+        require2fa: admin.require2fa,
+        makerChecker: admin.makerChecker,
+      },
+    });
+  }),
+);
+
+adminRouter.patch(
+  "/me",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        name: z.string().min(2).optional(),
+        phone: z.string().max(32).optional(),
+      })
+      .parse(req.body);
+    const row = await prisma.adminUser.update({
+      where: { id: req.adminId! },
+      data: {
+        ...(body.name !== undefined ? { name: body.name.trim() } : {}),
+        ...(body.phone !== undefined ? { phone: body.phone.replace(/\D/g, "") || null } : {}),
+      },
+    });
+    res.json({
+      data: { id: row.id, name: row.name, phone: row.phone, email: row.email, role: row.role },
+    });
+  }),
+);
+
+adminRouter.post(
+  "/me/password",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        currentPassword: z.string().min(1),
+        newPassword: z.string().min(1),
+      })
+      .parse(req.body);
+    assertAdminPasswordRules(body.newPassword);
+    const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    const ok = await verifySecret(body.currentPassword, admin.passwordHash);
+    if (!ok) throw new AppError(401, "Current password is incorrect", "PASSWORD_INVALID");
+    await prisma.adminUser.update({
+      where: { id: admin.id },
+      data: { passwordHash: await hashSecret(body.newPassword), invitePending: false },
+    });
+    await prisma.adminSession.updateMany({
+      where: { adminId: admin.id, revokedAt: null },
+      data: { revokedAt: new Date() },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "admin.password_changed",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+    res.json({ data: { ok: true } });
   }),
 );
 
@@ -1858,6 +2092,8 @@ adminRouter.get(
             (r.entityType && r.entityId ? `${r.entityType} · ${r.entityId.slice(0, 8)}` : null),
           before: r.before,
           after: r.after,
+          ipAddress: r.ipAddress,
+          userAgent: r.userAgent,
           createdAt: r.createdAt,
         };
       }),

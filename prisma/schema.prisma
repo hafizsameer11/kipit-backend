@@ -583,6 +583,7 @@ model ChatSession {
   id        String        @id @default(cuid())
   userId    String
   user      User          @relation(fields: [userId], references: [id], onDelete: Cascade)
+  flagged   Boolean       @default(false)
   createdAt DateTime      @default(now())
   messages  ChatMessage[]
 }
@@ -598,16 +599,21 @@ model ChatMessage {
 }
 
 model AdminUser {
-  id           String    @id @default(cuid())
-  email        String    @unique
-  name         String
-  passwordHash String
-  role         AdminRole
-  pinHash      String?
-  active       Boolean   @default(true)
-  createdAt    DateTime  @default(now())
-  updatedAt    DateTime  @updatedAt
-  sessions     AdminSession[]
+  id            String    @id @default(cuid())
+  email         String    @unique
+  name          String
+  passwordHash  String
+  role          AdminRole
+  pinHash       String?
+  department    String?
+  phone         String?
+  invitePending Boolean   @default(false)
+  require2fa    Boolean   @default(false)
+  makerChecker  Boolean   @default(false)
+  active        Boolean   @default(true)
+  createdAt     DateTime  @default(now())
+  updatedAt     DateTime  @updatedAt
+  sessions      AdminSession[]
 }
 
 model AdminSession {
