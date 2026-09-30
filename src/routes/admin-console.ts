@@ -107,7 +107,43 @@ const DEFAULT_SETTINGS = {
     },
   ],
   maintenance: { enabled: false, message: "Kipit is under maintenance. Please try again shortly." },
+  support: {
+    phone: "+2347000547480",
+    /** Digits with country code, no + or spaces — used to build https://wa.me/{whatsapp} */
+    whatsapp: "",
+    email: "support@kipit.ng",
+  },
 };
+
+export type SystemSupportContacts = {
+  phone: string;
+  whatsapp: string;
+  email: string;
+};
+
+/** Public-safe slice of system settings (no fees/limits). */
+export async function getPublicAppConfig() {
+  const settings = await getConfig("system.settings", DEFAULT_SETTINGS);
+  const support = {
+    ...DEFAULT_SETTINGS.support,
+    ...(settings as { support?: Partial<SystemSupportContacts> }).support,
+  };
+  const maintenance = {
+    ...DEFAULT_SETTINGS.maintenance,
+    ...(settings as { maintenance?: { enabled?: boolean; message?: string } }).maintenance,
+  };
+  return {
+    support: {
+      phone: String(support.phone || "").trim(),
+      whatsapp: String(support.whatsapp || "").replace(/\D/g, ""),
+      email: String(support.email || "").trim(),
+    },
+    maintenance: {
+      enabled: Boolean(maintenance.enabled),
+      message: String(maintenance.message || DEFAULT_SETTINGS.maintenance.message),
+    },
+  };
+}
 
 const DEFAULT_DIGEST = {
   enabled: true,
@@ -274,7 +310,20 @@ adminConsoleRouter.get(
   "/settings",
   asyncHandler(async (_req, res) => {
     const settings = await getConfig("system.settings", DEFAULT_SETTINGS);
-    res.json({ data: settings });
+    res.json({
+      data: {
+        ...DEFAULT_SETTINGS,
+        ...settings,
+        support: {
+          ...DEFAULT_SETTINGS.support,
+          ...(settings as { support?: Partial<SystemSupportContacts> }).support,
+        },
+        maintenance: {
+          ...DEFAULT_SETTINGS.maintenance,
+          ...(settings as { maintenance?: object }).maintenance,
+        },
+      },
+    });
   }),
 );
 
@@ -298,16 +347,35 @@ adminConsoleRouter.put(
           )
           .optional(),
         maintenance: z.object({ enabled: z.boolean(), message: z.string() }).optional(),
+        support: z
+          .object({
+            phone: z.string().max(32).optional(),
+            whatsapp: z.string().max(32).optional(),
+            email: z.string().max(120).optional(),
+          })
+          .optional(),
       })
       .parse(req.body);
 
     const current = await getConfig("system.settings", DEFAULT_SETTINGS);
+    const currentSupport = {
+      ...DEFAULT_SETTINGS.support,
+      ...(current as { support?: Partial<SystemSupportContacts> }).support,
+    };
+    const nextSupport = body.support
+      ? {
+          phone: String(body.support.phone ?? currentSupport.phone).trim(),
+          whatsapp: String(body.support.whatsapp ?? currentSupport.whatsapp).replace(/\D/g, ""),
+          email: String(body.support.email ?? currentSupport.email).trim(),
+        }
+      : currentSupport;
     const next = {
       fees: body.fees ?? current.fees,
       limits: body.limits ?? current.limits,
       cutoffs: body.cutoffs ?? current.cutoffs,
       flags: body.flags ?? current.flags,
       maintenance: body.maintenance ?? current.maintenance,
+      support: nextSupport,
     };
     await setConfig("system.settings", next, req.adminId);
     await writeAudit({
