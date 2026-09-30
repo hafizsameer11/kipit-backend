@@ -502,6 +502,122 @@ adminConsoleRouter.get(
   }),
 );
 
+async function buildReportExport(
+  packId: string,
+  from: Date,
+  to: Date,
+): Promise<{ headers: string[]; rows: string[][]; rowCount: number }> {
+  const iso = (d: Date) => d.toISOString();
+  if (packId === "rp-ledger") {
+    const headers = ["Reference", "Kind", "Description", "Created at"];
+    const entries = await prisma.journalEntry.findMany({
+      where: { createdAt: { gte: from, lte: to } },
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+    });
+    const rows = entries.map((e) => [e.reference, e.kind, e.description ?? "", iso(e.createdAt)]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  if (packId === "rp-withdrawals") {
+    const headers = ["ID", "User ID", "Amount (₦)", "Status", "Created at"];
+    const items = await prisma.withdrawalRequest.findMany({
+      where: { createdAt: { gte: from, lte: to } },
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+    });
+    const rows = items.map((w) => [
+      w.id,
+      w.userId,
+      koboToNaira(w.amountKobo).toFixed(2),
+      w.status,
+      iso(w.createdAt),
+    ]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  if (packId === "rp-support") {
+    const headers = ["ID", "User ID", "Category", "Subject", "Status", "Created at"];
+    const items = await prisma.supportTicket.findMany({
+      where: { createdAt: { gte: from, lte: to } },
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+    });
+    const rows = items.map((t) => [t.id, t.userId, t.category, t.subject, t.status, iso(t.createdAt)]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  if (packId === "rp-audit") {
+    const headers = ["ID", "Action", "Entity type", "Entity ID", "Actor admin", "IP", "Created at"];
+    const items = await prisma.auditEvent.findMany({
+      where: { createdAt: { gte: from, lte: to } },
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+    });
+    const rows = items.map((e) => [
+      e.id,
+      e.action,
+      e.entityType ?? "",
+      e.entityId ?? "",
+      e.actorAdminId ?? "",
+      e.ipAddress ?? "",
+      iso(e.createdAt),
+    ]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  if (packId === "rp-ai") {
+    const headers = ["Session ID", "User ID", "Messages", "Flagged", "Created at"];
+    const sessions = await prisma.chatSession.findMany({
+      where: { createdAt: { gte: from, lte: to } },
+      include: { _count: { select: { messages: true } } },
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+    });
+    const rows = sessions.map((s) => [
+      s.id,
+      s.userId,
+      String(s._count.messages),
+      s.flagged ? "yes" : "no",
+      iso(s.createdAt),
+    ]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  if (packId === "rp-kyc") {
+    const headers = ["User ID", "Email", "KYC tier", "Frozen", "Created at"];
+    const users = await prisma.user.findMany({
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+      select: { id: true, email: true, kycTier: true, frozen: true, createdAt: true },
+    });
+    const rows = users.map((u) => [u.id, u.email ?? "", u.kycTier, u.frozen ? "yes" : "no", iso(u.createdAt)]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  if (packId === "rp-growth") {
+    const headers = ["User ID", "Email", "Created at"];
+    const users = await prisma.user.findMany({
+      where: { createdAt: { gte: from, lte: to } },
+      orderBy: { createdAt: "asc" },
+      take: 5000,
+      select: { id: true, email: true, createdAt: true },
+    });
+    const rows = users.map((u) => [u.id, u.email ?? "", iso(u.createdAt)]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  if (packId === "rp-fum") {
+    const headers = ["Placement ID", "User ID", "Kind", "Principal (₦)", "Status"];
+    const placements = await prisma.placement.findMany({
+      where: { status: "ACTIVE" },
+      take: 5000,
+    });
+    const rows = placements.map((p) => [
+      p.id,
+      p.userId,
+      p.kind,
+      koboToNaira(p.principalKobo).toFixed(2),
+      p.status,
+    ]);
+    return { headers, rows, rowCount: rows.length };
+  }
+  return { headers: ["Note"], rows: [["No export rows for this pack"]], rowCount: 0 };
+}
+
 adminConsoleRouter.post(
   "/reports/run",
   asyncHandler(async (req: AdminRequest, res) => {
@@ -518,33 +634,11 @@ adminConsoleRouter.post(
 
     const from = body.from ? new Date(body.from) : new Date(Date.now() - 30 * 86400000);
     const to = body.to ? new Date(body.to) : new Date();
-
-    let rowCount = 0;
-    if (pack.id === "rp-ledger") {
-      rowCount = await prisma.journalEntry.count({
-        where: { createdAt: { gte: from, lte: to } },
-      });
-    } else if (pack.id === "rp-kyc") {
-      rowCount = await prisma.user.count();
-    } else if (pack.id === "rp-withdrawals") {
-      rowCount = await prisma.withdrawalRequest.count({
-        where: { createdAt: { gte: from, lte: to } },
-      });
-    } else if (pack.id === "rp-support") {
-      rowCount = await prisma.supportTicket.count({
-        where: { createdAt: { gte: from, lte: to } },
-      });
-    } else if (pack.id === "rp-audit") {
-      rowCount = await prisma.auditEvent.count({
-        where: { createdAt: { gte: from, lte: to } },
-      });
-    } else if (pack.id === "rp-growth") {
-      rowCount = await prisma.user.count({ where: { createdAt: { gte: from, lte: to } } });
-    } else if (pack.id === "rp-ai") {
-      rowCount = await prisma.chatSession.count({ where: { createdAt: { gte: from, lte: to } } });
-    } else if (pack.id === "rp-fum") {
-      rowCount = await prisma.placement.count({ where: { status: "ACTIVE" } });
+    if (from.getTime() > to.getTime()) {
+      throw new AppError(400, "From date must be on or before To date", "INVALID_RANGE");
     }
+
+    const { headers, rows, rowCount } = await buildReportExport(pack.id, from, to);
 
     const job = await prisma.jobRun.create({
       data: {
@@ -576,6 +670,8 @@ adminConsoleRouter.post(
         name: pack.name,
         format: body.format,
         rowCount,
+        headers,
+        rows,
         status: "SUCCESS",
         message: `Report ready · ${rowCount.toLocaleString("en-NG")} rows · ${body.format}`,
       },
@@ -600,5 +696,74 @@ adminConsoleRouter.put(
       .parse(req.body);
     await setConfig("reports.schedules", body, req.adminId);
     res.json({ data: body });
+  }),
+);
+
+adminConsoleRouter.get(
+  "/role-permissions",
+  asyncHandler(async (_req, res) => {
+    const stored = await getConfig("admin.rolePermissions", null as Record<string, string[]> | null);
+    res.json({ data: stored ?? {} });
+  }),
+);
+
+adminConsoleRouter.put(
+  "/role-permissions",
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z.record(z.string(), z.array(z.string())).parse(req.body);
+    await setConfig("admin.rolePermissions", body, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "roles.permissions_updated",
+      entityType: "AppConfig",
+      entityId: "admin.rolePermissions",
+    });
+    res.json({ data: body });
+  }),
+);
+
+adminConsoleRouter.get(
+  "/marketing/audience/count",
+  asyncHandler(async (req, res) => {
+    const total = await prisma.user.count();
+    res.json({ data: { total } });
+  }),
+);
+
+adminConsoleRouter.get(
+  "/marketing/audience/filters",
+  asyncHandler(async (_req, res) => {
+    const filters = await getConfig("marketing.audienceFilters", {
+      tier: "Any tier",
+      status: "Any",
+      kind: "All customers",
+      minBalance: "",
+    });
+    res.json({ data: filters });
+  }),
+);
+
+adminConsoleRouter.put(
+  "/marketing/audience/filters",
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        tier: z.string(),
+        status: z.string(),
+        kind: z.string(),
+        minBalance: z.string(),
+      })
+      .parse(req.body);
+    await setConfig("marketing.audienceFilters", body, req.adminId);
+    res.json({ data: body });
+  }),
+);
+
+adminConsoleRouter.post(
+  "/marketing/digest/send-now",
+  asyncHandler(async (req: AdminRequest, res) => {
+    const { runMarketingDigestJob } = await import("../jobs/marketing-digest.js");
+    const result = await runMarketingDigestJob({ manual: true, adminId: req.adminId });
+    res.status(201).json({ data: result });
   }),
 );
