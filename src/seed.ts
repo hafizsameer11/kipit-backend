@@ -7,12 +7,12 @@ async function main() {
   console.log("Seeding Kipit…");
 
   const bands = [
-    { code: "CALL", label: "Call Account", minDays: 0, maxDays: 0, rateBps: 1450 },
-    { code: "1-90", label: "1–90 days", minDays: 1, maxDays: 90, rateBps: 1600 },
-    { code: "91-120", label: "91–120 days", minDays: 91, maxDays: 120, rateBps: 1750 },
-    { code: "121-180", label: "121–180 days", minDays: 121, maxDays: 180, rateBps: 1920 },
-    { code: "181-364", label: "181–364 days", minDays: 181, maxDays: 364, rateBps: 2050 },
-    { code: "365+", label: "365+ days", minDays: 365, maxDays: null, rateBps: 2150 },
+    { code: "CALL", label: "Kipit Call Account", minDays: 0, maxDays: 0, rateBps: 1450 },
+    { code: "1-90", label: "Kipit Starter", minDays: 1, maxDays: 90, rateBps: 1600 },
+    { code: "91-120", label: "Kipit Fixed Income", minDays: 91, maxDays: 120, rateBps: 1750 },
+    { code: "121-180", label: "Kipit Target Savings", minDays: 121, maxDays: 180, rateBps: 1920 },
+    { code: "181-364", label: "Kipit Growth", minDays: 181, maxDays: 364, rateBps: 2050 },
+    { code: "365+", label: "Kipit Vault", minDays: 365, maxDays: null, rateBps: 2150 },
   ];
 
   for (const b of bands) {
