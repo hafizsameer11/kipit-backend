@@ -49,6 +49,41 @@ export async function sendWelcomeEmail(input: {
   return sendEmail({ to: input.to, subject, text, html });
 }
 
+export async function sendAdminInviteEmail(input: {
+  to: string;
+  name: string;
+  tempPassword: string;
+  role: string;
+}) {
+  const name = input.name.trim() || "there";
+  const subject = "You're invited to the Kipit admin console";
+  const text = [
+    `Hi ${name},`,
+    "",
+    "You've been invited to the Kipit operations console.",
+    `Role: ${input.role}`,
+    "",
+    `Temporary password: ${input.tempPassword}`,
+    "",
+    "Sign in and change your password at first login.",
+    "",
+    "— Kipit Operations",
+  ].join("\n");
+  const html = brandWrap(
+    "Kipit console invitation",
+    `
+      <p style="margin:0 0 12px">Hi ${name},</p>
+      <p style="margin:0 0 12px">You've been invited to the <strong>Kipit admin console</strong>.</p>
+      <p style="margin:0 0 12px">Role: <strong>${input.role}</strong></p>
+      <p style="margin:16px 0;padding:12px 14px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0">
+        <strong>Temporary password:</strong> <code>${input.tempPassword}</code>
+      </p>
+      <p style="margin:0 0 12px">Sign in and change your password at first login.</p>
+    `,
+  );
+  return sendEmail({ to: input.to, subject, text, html });
+}
+
 export async function sendCustomerTxnEmail(input: {
   to: string;
   firstName: string;

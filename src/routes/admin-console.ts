@@ -132,6 +132,8 @@ export async function getPublicAppConfig() {
     ...DEFAULT_SETTINGS.maintenance,
     ...(settings as { maintenance?: { enabled?: boolean; message?: string } }).maintenance,
   };
+  const flags = (settings as { flags?: { id: string; enabled: boolean }[] }).flags ?? DEFAULT_SETTINGS.flags;
+  const askAiFlag = flags.find((f) => f.id === "ff-ai");
   return {
     support: {
       phone: String(support.phone || "").trim(),
@@ -142,7 +144,20 @@ export async function getPublicAppConfig() {
       enabled: Boolean(maintenance.enabled),
       message: String(maintenance.message || DEFAULT_SETTINGS.maintenance.message),
     },
+    featureFlags: {
+      askAi: askAiFlag?.enabled ?? true,
+    },
   };
+}
+
+function assertNonNegativeNumericRows(rows: { value: string }[] | undefined, label: string) {
+  if (!rows) return;
+  for (const row of rows) {
+    const n = Number(String(row.value).replace(/,/g, ""));
+    if (!Number.isFinite(n) || n < 0) {
+      throw new AppError(400, `${label}: "${row.label}" must be a number ≥ 0`, "INVALID_SETTING");
+    }
+  }
 }
 
 const DEFAULT_DIGEST = {
@@ -369,6 +384,8 @@ adminConsoleRouter.put(
           email: String(body.support.email ?? currentSupport.email).trim(),
         }
       : currentSupport;
+    assertNonNegativeNumericRows(body.fees, "Fees");
+    assertNonNegativeNumericRows(body.limits, "Limits");
     const next = {
       fees: body.fees ?? current.fees,
       limits: body.limits ?? current.limits,
