@@ -103,12 +103,18 @@ export async function moveWalletToCall(userId: string, amountKobo: bigint, idemp
 
 export async function moveCallToWallet(userId: string, amountKobo: bigint, idempotencyKey: string) {
   const call = await ensureUserCall(userId);
-  if (call.balanceKobo < amountKobo) {
-    throw new AppError(400, "Insufficient Call balance", "INSUFFICIENT_FUNDS");
+  let debit = amountKobo;
+  // Max / full-balance moves can overshoot by < ₦1 after client naira rounding.
+  if (debit > call.balanceKobo) {
+    if (debit - call.balanceKobo <= 100n) {
+      debit = call.balanceKobo;
+    } else {
+      throw new AppError(400, "Insufficient Call balance", "INSUFFICIENT_FUNDS");
+    }
   }
   return creditWalletFrom({
     userId,
-    amountKobo,
+    amountKobo: debit,
     kind: "CALL_WITHDRAW",
     idempotencyKey,
     description: "Call to wallet",
