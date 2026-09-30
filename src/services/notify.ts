@@ -1,6 +1,7 @@
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { brandWrap, sendEmail } from "./email.js";
+import { sendPushToUser, type PushKind } from "./push.js";
 
 export async function sendWelcomeEmail(input: {
   to: string;
@@ -135,6 +136,8 @@ export async function notifyCustomer(input: {
   emailKind?: "deposit" | "withdrawal" | "investment" | "withdrawal_result";
   amountNaira?: number;
   emailDetail?: string;
+  /** Device push category — defaults from emailKind when omitted. */
+  pushKind?: PushKind;
 }) {
   await prisma.notification.create({
     data: {
@@ -144,6 +147,24 @@ export async function notifyCustomer(input: {
       href: input.href,
     },
   });
+
+  const pushKind: PushKind =
+    input.pushKind ??
+    (input.emailKind === "deposit"
+      ? "deposit"
+      : input.emailKind === "withdrawal" || input.emailKind === "withdrawal_result"
+        ? "withdrawal"
+        : input.emailKind === "investment"
+          ? "investment"
+          : "general");
+
+  await sendPushToUser({
+    userId: input.userId,
+    title: input.title,
+    body: input.body,
+    href: input.href,
+    kind: pushKind,
+  }).catch((err) => console.warn("[notify] push failed", err));
 
   if (!input.emailKind || input.amountNaira == null) return;
 

@@ -353,6 +353,59 @@ settingsRouter.patch(
   }),
 );
 
+settingsRouter.post(
+  "/push-token",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        token: z.string().min(20).max(512),
+        platform: z.string().max(32).optional(),
+        deviceName: z.string().max(120).optional(),
+      })
+      .parse(req.body);
+    const { upsertPushDevice } = await import("../services/push.js");
+    const device = await upsertPushDevice({
+      userId: req.userId!,
+      token: body.token,
+      platform: body.platform,
+      deviceName: body.deviceName,
+    });
+    res.json({ data: { id: device.id, ok: true } });
+  }),
+);
+
+settingsRouter.delete(
+  "/push-token",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const token =
+      typeof req.query.token === "string"
+        ? req.query.token
+        : typeof (req.body as { token?: string } | undefined)?.token === "string"
+          ? (req.body as { token: string }).token
+          : undefined;
+    const { removePushDevice } = await import("../services/push.js");
+    await removePushDevice({ userId: req.userId!, token });
+    res.json({ data: { ok: true } });
+  }),
+);
+
+settingsRouter.post(
+  "/push-token/unregister",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        token: z.string().min(20).max(512).optional(),
+      })
+      .parse(req.body ?? {});
+    const { removePushDevice } = await import("../services/push.js");
+    await removePushDevice({ userId: req.userId!, token: body.token });
+    res.json({ data: { ok: true } });
+  }),
+);
+
 settingsRouter.get(
   "/referrals",
   requireAuth,

@@ -77,6 +77,12 @@ const envSchema = z.object({
 
   /** Comma-separated ops/admin emails for withdrawal request alerts. Falls back to SUPER/GLOBAL/OPERATIONS admins. */
   OPS_ALERT_EMAILS: z.string().optional().default(""),
+
+  /**
+   * Optional Expo access token (expo.dev → Access tokens) for higher push rate limits.
+   * Device delivery still uses Expo Push + FCM/APNs credentials in EAS.
+   */
+  EXPO_ACCESS_TOKEN: z.string().optional().default(""),
 });
 
 export const env = envSchema.parse(process.env);
