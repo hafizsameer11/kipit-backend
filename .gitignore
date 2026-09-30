@@ -6,3 +6,6 @@ dist/
 prisma/*.db
 prisma/*.db-journal
 uploads/
+secrets/
+*firebase*adminsdk*.json
+google-services.json

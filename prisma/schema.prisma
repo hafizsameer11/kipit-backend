@@ -170,6 +170,21 @@ model User {
   chatSessions     ChatSession[]
   autoInvestRules  AutoInvestRule[]
   notificationPrefs NotificationPref?
+  pushDevices      PushDevice[]
+}
+
+/** Expo / FCM push tokens registered by the mobile app. */
+model PushDevice {
+  id         String   @id @default(cuid())
+  userId     String
+  user       User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  token      String   @unique
+  platform   String?
+  deviceName String?
+  updatedAt  DateTime @updatedAt
+  createdAt  DateTime @default(now())
+
+  @@index([userId])
 }
 
 model Session {

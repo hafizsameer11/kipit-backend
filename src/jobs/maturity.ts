@@ -51,23 +51,43 @@ export async function runMaturityEngine() {
 
       if (p.maturityInstruction === "ROLLOVER" && p.tenorDays) {
         // Simple rollover: leave funds in wallet and notify; full auto-reinvest can expand later
+        const title = "Plan matured — ready to roll over";
+        const body = `${p.name} matured. ₦${Number(payout) / 100} is in your wallet.`;
         await prisma.notification.create({
           data: {
             userId: p.userId,
-            title: "Plan matured — ready to roll over",
-            body: `${p.name} matured. ₦${Number(payout) / 100} is in your wallet.`,
+            title,
+            body,
             href: "/fixed-plans/create",
           },
         });
+        const { sendPushToUser } = await import("../services/push.js");
+        await sendPushToUser({
+          userId: p.userId,
+          title,
+          body,
+          href: "/fixed-plans/create",
+          kind: "maturity",
+        }).catch(() => undefined);
       } else {
+        const title = "Plan matured";
+        const body = `${p.name} matured. Funds are in your wallet.`;
         await prisma.notification.create({
           data: {
             userId: p.userId,
-            title: "Plan matured",
-            body: `${p.name} matured. Funds are in your wallet.`,
+            title,
+            body,
             href: "/portfolio",
           },
         });
+        const { sendPushToUser } = await import("../services/push.js");
+        await sendPushToUser({
+          userId: p.userId,
+          title,
+          body,
+          href: "/portfolio",
+          kind: "maturity",
+        }).catch(() => undefined);
       }
 
       await prisma.placement.update({
