@@ -27,8 +27,9 @@ settingsRouter.get(
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
     const lockedFields: string[] = [];
     if (user.kycTier !== "TIER_0") {
-      lockedFields.push("firstName", "surname", "gender");
+      lockedFields.push("firstName", "surname");
     }
+    if (user.gender) lockedFields.push("gender");
     if (user.dateOfBirth) lockedFields.push("dateOfBirth");
     if (user.phone) lockedFields.push("phone");
 
@@ -85,9 +86,12 @@ settingsRouter.patch(
 
     const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
     if (user.kycTier !== "TIER_0") {
-      if (body.firstName || body.surname || body.gender) {
+      if (body.firstName || body.surname) {
         throw new AppError(400, "Identity fields are locked after verification", "PROFILE_LOCKED");
       }
+    }
+    if (body.gender && user.gender) {
+      throw new AppError(400, "Gender is already set. Contact support to change it.", "PROFILE_LOCKED");
     }
     if (body.dateOfBirth && user.dateOfBirth) {
       throw new AppError(400, "Date of birth is already set. Contact support to change it.", "PROFILE_LOCKED");
