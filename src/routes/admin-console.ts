@@ -132,8 +132,16 @@ export async function getPublicAppConfig() {
     ...DEFAULT_SETTINGS.maintenance,
     ...(settings as { maintenance?: { enabled?: boolean; message?: string } }).maintenance,
   };
-  const flags = (settings as { flags?: { id: string; enabled: boolean }[] }).flags ?? DEFAULT_SETTINGS.flags;
-  const flagOn = (id: string, fallback = true) => flags.find((f) => f.id === id)?.enabled ?? fallback;
+  const storedFlags =
+    (settings as { flags?: { id: string; enabled?: boolean; label?: string; description?: string; audience?: string }[] })
+      .flags ?? [];
+  const flagsById = new Map(storedFlags.map((f) => [f.id, f]));
+  /** Always resolve against the canonical flag catalogue so unknown/partial stores don't fail open. */
+  const flagOn = (id: string) => {
+    const hit = flagsById.get(id);
+    if (hit && typeof hit.enabled === "boolean") return hit.enabled;
+    return DEFAULT_SETTINGS.flags.find((f) => f.id === id)?.enabled ?? true;
+  };
   return {
     support: {
       phone: String(support.phone || "").trim(),
@@ -151,6 +159,49 @@ export async function getPublicAppConfig() {
       explore: flagOn("ff-explore"),
     },
   };
+}
+
+function mergeSettingsFlags(
+  incoming:
+    | {
+        id: string;
+        label: string;
+        description: string;
+        enabled: boolean;
+        audience: string;
+      }[]
+    | undefined,
+  current:
+    | {
+        id: string;
+        label?: string;
+        description?: string;
+        enabled?: boolean;
+        audience?: string;
+      }[]
+    | undefined,
+) {
+  const byId = new Map(DEFAULT_SETTINGS.flags.map((f) => [f.id, { ...f }]));
+  for (const f of current ?? []) {
+    const base = byId.get(f.id) ?? {
+      id: f.id,
+      label: f.label ?? f.id,
+      description: f.description ?? "",
+      enabled: true,
+      audience: f.audience ?? "All customers",
+    };
+    byId.set(f.id, {
+      ...base,
+      ...f,
+      id: f.id,
+      enabled: typeof f.enabled === "boolean" ? f.enabled : base.enabled,
+    });
+  }
+  for (const f of incoming ?? []) {
+    const base = byId.get(f.id) ?? { ...f };
+    byId.set(f.id, { ...base, ...f, id: f.id });
+  }
+  return DEFAULT_SETTINGS.flags.map((d) => byId.get(d.id)!);
 }
 
 function assertNonNegativeNumericRows(rows: { value: string; label?: string }[] | undefined, label: string) {
@@ -408,7 +459,7 @@ adminConsoleRouter.put(
       fees: body.fees ?? current.fees,
       limits: body.limits ?? current.limits,
       cutoffs: body.cutoffs ?? current.cutoffs,
-      flags: body.flags ?? current.flags,
+      flags: mergeSettingsFlags(body.flags, (current as { flags?: typeof DEFAULT_SETTINGS.flags }).flags),
       maintenance: body.maintenance ?? current.maintenance,
       support: nextSupport,
     };

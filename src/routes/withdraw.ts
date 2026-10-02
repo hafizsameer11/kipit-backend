@@ -12,8 +12,10 @@ import { writeAudit } from "../services/audit.js";
 import { fuzzyScore } from "../services/kyc.js";
 import { listPaystackBanks, resolvePaystackAccount } from "../services/payments/paystack.js";
 import { paystackUseMock } from "../lib/env.js";
+import { rejectIfMaintenance } from "../middleware/maintenance.js";
 
 export const withdrawRouter = Router();
+withdrawRouter.use(rejectIfMaintenance);
 
 const NAME_MATCH_MIN = 0.5;
 

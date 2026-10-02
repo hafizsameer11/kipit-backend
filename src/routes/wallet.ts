@@ -17,8 +17,10 @@ import {
   listSavedCards,
 } from "../services/payments/funding.js";
 import { env } from "../lib/env.js";
+import { rejectIfMaintenance } from "../middleware/maintenance.js";
 
 export const walletRouter = Router();
+walletRouter.use(rejectIfMaintenance);
 
 walletRouter.get(
   "/",

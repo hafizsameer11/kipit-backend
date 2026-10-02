@@ -18,8 +18,10 @@ import {
 } from "../services/money.js";
 import { debitWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
+import { rejectIfMaintenance } from "../middleware/maintenance.js";
 
 export const investRouter = Router();
+investRouter.use(rejectIfMaintenance);
 
 function rateForTenorDays(
   days: number,
