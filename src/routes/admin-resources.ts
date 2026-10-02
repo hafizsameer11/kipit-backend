@@ -771,7 +771,16 @@ adminResourcesRouter.post(
       .object({
         email: z.string().email(),
         name: z.string().min(2),
-        role: z.enum(["SUPER", "GLOBAL", "COMPLIANCE", "OPERATIONS", "MARKETING"]),
+        role: z.enum([
+          "SUPER",
+          "GLOBAL",
+          "COMPLIANCE",
+          "OPERATIONS",
+          "MARKETING",
+          "FINANCE",
+          "SUPPORT",
+          "READ_ONLY",
+        ]),
         password: z.string().min(8),
       })
       .parse(req.body);
@@ -803,7 +812,18 @@ adminResourcesRouter.patch(
     const body = z
       .object({
         name: z.string().optional(),
-        role: z.enum(["SUPER", "GLOBAL", "COMPLIANCE", "OPERATIONS", "MARKETING"]).optional(),
+        role: z
+          .enum([
+            "SUPER",
+            "GLOBAL",
+            "COMPLIANCE",
+            "OPERATIONS",
+            "MARKETING",
+            "FINANCE",
+            "SUPPORT",
+            "READ_ONLY",
+          ])
+          .optional(),
         active: z.boolean().optional(),
       })
       .parse(req.body);
