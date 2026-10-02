@@ -19,8 +19,11 @@ import {
   normalizeGiftEmail,
   publicGiftPreview,
 } from "../services/gifts.js";
+import { rejectIfMaintenance } from "../middleware/maintenance.js";
+import { assertFeatureEnabled } from "../services/app-access.js";
 
 export const giftsRouter = Router();
+giftsRouter.use(rejectIfMaintenance);
 
 function mapGiftStatus(status: string, expiresAt?: Date | null): "Pending" | "Claimed" | "Expired" {
   if (status === "CLAIMED") return "Claimed";
@@ -179,6 +182,7 @@ giftsRouter.post(
   requireAuth,
   requireKyc("TIER_1"),
   asyncHandler(async (req: AuthRequest, res) => {
+    await assertFeatureEnabled("giftInvest", "Gift investments are temporarily unavailable.");
     const body = z
       .object({
         amount: z.number().positive(),

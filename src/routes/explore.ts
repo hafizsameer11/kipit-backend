@@ -11,8 +11,11 @@ import { verifyTransactionPin } from "../services/auth.js";
 import { debitWallet, interestForPeriod } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { asProductDetails } from "../lib/product-details.js";
+import { rejectIfMaintenance } from "../middleware/maintenance.js";
+import { assertFeatureEnabled } from "../services/app-access.js";
 
 export const exploreRouter = Router();
+exploreRouter.use(rejectIfMaintenance);
 
 exploreRouter.get(
   "/categories",
@@ -97,6 +100,7 @@ exploreRouter.post(
   requireAuth,
   requireKyc("TIER_1"),
   asyncHandler(async (req: AuthRequest, res) => {
+    await assertFeatureEnabled("explore", "Explore marketplace is temporarily unavailable.");
     const body = z
       .object({
         amount: z.number().positive(),
@@ -185,6 +189,7 @@ exploreRouter.post(
   requireAuth,
   requireKyc("TIER_1"),
   asyncHandler(async (req: AuthRequest, res) => {
+    await assertFeatureEnabled("explore", "Explore marketplace is temporarily unavailable.");
     const body = z.object({ message: z.string().optional() }).parse(req.body);
     const product = await prisma.product.findUnique({ where: { id: String(req.params.id) } });
     if (!product) throw new AppError(404, "Product not found", "PRODUCT_NOT_FOUND");

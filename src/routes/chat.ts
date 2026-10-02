@@ -6,6 +6,7 @@ import type { AuthRequest } from "../middleware/auth.js";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { buildAssistantReply } from "../services/ask-ai.js";
+import { assertFeatureEnabled } from "../services/app-access.js";
 
 export const chatRouter = Router();
 
@@ -17,6 +18,7 @@ chatRouter.post(
   "/message",
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
+    await assertFeatureEnabled("askAi", "Ask AI is temporarily turned off.");
     const body = z
       .object({
         sessionId: z.string().optional(),
