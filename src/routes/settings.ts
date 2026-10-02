@@ -513,7 +513,7 @@ settingsRouter.post(
         category: z.string().min(1).max(80),
         subject: z.string().min(1).max(160),
         body: z.string().min(1).max(4000),
-        attachmentUrl: z.string().url().max(500).optional(),
+        attachmentUrl: z.string().min(8).max(500).optional(),
         attachmentName: z.string().min(1).max(160).optional(),
       })
       .parse(req.body);
@@ -524,8 +524,8 @@ settingsRouter.post(
       if (!isOwnSupportUploadUrl(req.userId!, body.attachmentUrl)) {
         throw new AppError(400, "Invalid attachment. Upload the file again.", "UPLOAD_INVALID");
       }
-      attachmentUrl = body.attachmentUrl;
-      attachmentName = body.attachmentName?.trim() || "attachment";
+      attachmentUrl = body.attachmentUrl.trim();
+      attachmentName = body.attachmentName?.trim() || "attachment.jpg";
     }
 
     const ticket = await prisma.supportTicket.create({
@@ -647,7 +647,7 @@ settingsRouter.post(
     const body = z
       .object({
         body: z.string().min(1).max(4000),
-        attachmentUrl: z.string().url().max(500).optional(),
+        attachmentUrl: z.string().min(8).max(500).optional(),
         attachmentName: z.string().min(1).max(160).optional(),
       })
       .parse(req.body);
@@ -669,8 +669,8 @@ settingsRouter.post(
       if (!isOwnSupportUploadUrl(req.userId!, body.attachmentUrl)) {
         throw new AppError(400, "Invalid attachment. Upload the file again.", "UPLOAD_INVALID");
       }
-      attachmentUrl = body.attachmentUrl;
-      attachmentName = body.attachmentName?.trim() || "attachment";
+      attachmentUrl = body.attachmentUrl.trim();
+      attachmentName = body.attachmentName?.trim() || "attachment.jpg";
     }
 
     // Ensure legacy tickets have an opening message before replies.
