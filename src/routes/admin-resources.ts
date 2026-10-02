@@ -218,26 +218,31 @@ adminResourcesRouter.patch(
     const body = z
       .object({ frozen: z.boolean(), reason: z.string().optional() })
       .parse(req.body);
+    const reason = body.reason?.trim() || null;
     const user = await prisma.user.update({
       where: { id: String(req.params.userId) },
-      data: { frozen: body.frozen },
+      data: {
+        frozen: body.frozen,
+        frozenReason: body.frozen ? reason : null,
+      },
     });
     await writeAudit({
       actorAdminId: req.adminId,
       action: body.frozen ? "user.frozen" : "user.unfrozen",
       entityType: "User",
       entityId: user.id,
-      after: { frozen: body.frozen, reason: body.reason },
+      after: { frozen: body.frozen, reason },
     });
     await notifyAccountAccessChange({
       userId: user.id,
       frozen: body.frozen,
-      reason: body.reason,
+      reason: reason ?? undefined,
     }).catch((err) => console.warn("[admin] freeze notify failed", err));
     res.json({
       data: {
         id: user.id,
         frozen: user.frozen,
+        frozenReason: user.frozenReason,
         name: `${user.firstName} ${user.surname}`,
       },
     });

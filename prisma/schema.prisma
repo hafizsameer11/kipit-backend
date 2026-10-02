@@ -150,6 +150,7 @@ model User {
   failedLoginCount Int       @default(0)
   lockedUntil      DateTime?
   frozen           Boolean   @default(false)
+  frozenReason     String?
   monnifyAccountNo String?
   monnifyBankName   String?
   createdAt        DateTime  @default(now())
