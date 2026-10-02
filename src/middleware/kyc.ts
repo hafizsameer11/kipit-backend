@@ -15,9 +15,12 @@ export function requireKyc(min: KycTier) {
     try {
       const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
       if (user.frozen) {
+        const reason = user.frozenReason?.trim();
         throw new AppError(
           403,
-          "Your account is temporarily restricted. Your money is safe. Contact Kipit support to lift the restriction.",
+          reason
+            ? `Your account is temporarily restricted: ${reason}. Your money is safe. Contact Kipit support to lift the restriction.`
+            : "Your account is temporarily restricted. Your money is safe. Contact Kipit support to lift the restriction.",
           "ACCOUNT_FROZEN",
         );
       }
