@@ -34,6 +34,7 @@ meRouter.get(
       data: {
         greetingName: user.firstName,
         kycTier: user.kycTier,
+        frozen: user.frozen,
         wallet: {
           currency: "NGN",
           balanceKobo: wallet.balanceKobo.toString(),

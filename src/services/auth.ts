@@ -451,6 +451,7 @@ export function publicUser(user: {
   biometricsTxn: boolean;
   pinHash: string | null;
   createdAt: Date;
+  frozen?: boolean;
 }) {
   return {
     id: user.id,
@@ -464,6 +465,7 @@ export function publicUser(user: {
     biometricsLogin: user.biometricsLogin,
     biometricsTxn: user.biometricsTxn,
     hasPin: Boolean(user.pinHash),
+    frozen: Boolean(user.frozen),
     createdAt: user.createdAt,
   };
 }

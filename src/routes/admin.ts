@@ -18,7 +18,7 @@ import {
   type AdminRequest,
 } from "../middleware/admin.js";
 import { listSignupDropoffs } from "../services/signup-funnel.js";
-import { sendWelcomeEmail, notifyCustomer, sendAdminInviteEmail } from "../services/notify.js";
+import { sendWelcomeEmail, notifyCustomer, notifyAccountAccessChange, sendAdminInviteEmail } from "../services/notify.js";
 import { requestOtp, verifyOtp } from "../services/auth.js";
 import { productDetailsSchema, toPrismaJson, asProductDetails } from "../lib/product-details.js";
 import jwt from "jsonwebtoken";
@@ -862,16 +862,11 @@ adminRouter.patch(
       ipAddress: req.ip,
       userAgent: req.get("user-agent") ?? undefined,
     });
-    const reasonText = body.reason?.trim();
-    await notifyCustomer({
+    await notifyAccountAccessChange({
       userId: user.id,
-      title: body.frozen ? "Account restricted" : "Account restriction lifted",
-      body: body.frozen
-        ? `Your Kipit account has been temporarily restricted${reasonText ? `: ${reasonText}` : "."} Your money is safe. Contact support if you need help.`
-        : "Your Kipit account access has been restored. You can fund, invest and withdraw again.",
-      href: "/settings/help",
-      pushKind: "security",
-    }).catch(() => undefined);
+      frozen: body.frozen,
+      reason: body.reason,
+    }).catch((err) => console.warn("[admin] freeze notify failed", err));
     res.json({ data: { id: user.id, frozen: user.frozen } });
   }),
 );

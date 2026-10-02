@@ -247,3 +247,21 @@ export async function notifyCustomer(input: {
 }) {
   return createUserNotification(input);
 }
+
+/** In-app + push when an admin freezes or unfreezes a customer account. */
+export async function notifyAccountAccessChange(input: {
+  userId: string;
+  frozen: boolean;
+  reason?: string;
+}) {
+  const reasonText = input.reason?.trim();
+  return createUserNotification({
+    userId: input.userId,
+    title: input.frozen ? "Account restricted" : "Account restriction lifted",
+    body: input.frozen
+      ? `Your Kipit account has been temporarily restricted${reasonText ? `: ${reasonText}` : "."} Your money is safe. Contact Kipit support to lift the restriction.`
+      : "Your Kipit account access has been restored. You can fund, invest and withdraw again.",
+    href: "/settings/help",
+    pushKind: "security",
+  });
+}
