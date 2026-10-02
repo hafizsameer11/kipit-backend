@@ -57,7 +57,16 @@ function fmtRelative(date: Date) {
   return `${days} day${days === 1 ? "" : "s"} ago`;
 }
 
-const adminRoleSchema = z.enum(["SUPER", "GLOBAL", "COMPLIANCE", "OPERATIONS", "MARKETING"]);
+const adminRoleSchema = z.enum([
+  "SUPER",
+  "GLOBAL",
+  "COMPLIANCE",
+  "OPERATIONS",
+  "MARKETING",
+  "FINANCE",
+  "SUPPORT",
+  "READ_ONLY",
+]);
 
 function assertAdminPasswordRules(password: string) {
   if (password.length < 12) {

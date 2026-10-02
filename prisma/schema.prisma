@@ -96,6 +96,9 @@ enum AdminRole {
   COMPLIANCE
   OPERATIONS
   MARKETING
+  FINANCE
+  SUPPORT
+  READ_ONLY
 }
 
 enum AccountType {

@@ -4,7 +4,15 @@ import { AppError } from "../lib/errors.js";
 import { env } from "../lib/env.js";
 import { prisma } from "../lib/prisma.js";
 
-export type AdminRoleName = "SUPER" | "GLOBAL" | "COMPLIANCE" | "OPERATIONS" | "MARKETING";
+export type AdminRoleName =
+  | "SUPER"
+  | "GLOBAL"
+  | "COMPLIANCE"
+  | "OPERATIONS"
+  | "MARKETING"
+  | "FINANCE"
+  | "SUPPORT"
+  | "READ_ONLY";
 
 export type AdminRequest = Request & {
   adminId?: string;
