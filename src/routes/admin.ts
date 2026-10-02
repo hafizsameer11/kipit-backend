@@ -1208,16 +1208,27 @@ adminRouter.post(
       })
       .parse(req.body);
     const effective = new Date(body.effectiveFrom);
-    const startOfToday = new Date();
-    startOfToday.setHours(0, 0, 0, 0);
-    if (Number.isNaN(effective.getTime()) || effective < startOfToday) {
+    if (Number.isNaN(effective.getTime())) {
       throw new AppError(400, "Effective date must be today or later", "INVALID_DATE");
     }
+    // Compare calendar dates in UTC so timezone offsets don't reject "today".
+    const effectiveDay = Date.UTC(
+      effective.getUTCFullYear(),
+      effective.getUTCMonth(),
+      effective.getUTCDate(),
+    );
+    const now = new Date();
+    const todayDay = Date.UTC(now.getUTCFullYear(), now.getUTCMonth(), now.getUTCDate());
+    if (effectiveDay < todayDay) {
+      throw new AppError(400, "Effective date must be today or later", "INVALID_DATE");
+    }
+    const band = await prisma.rateBand.findUnique({ where: { id: body.bandId } });
+    if (!band) throw new AppError(404, "Rate band not found", "BAND_NOT_FOUND");
     const row = await prisma.rateChangeRequest.create({
       data: {
         bandId: body.bandId,
         proposedBps: body.proposedBps,
-        effectiveFrom: effective,
+        effectiveFrom: new Date(effectiveDay),
         reason: body.reason,
         makerAdminId: req.adminId!,
       },
@@ -1298,6 +1309,8 @@ adminRouter.get(
         code: r.band.code,
         currentBps: r.band.rateBps,
         proposedBps: r.proposedBps,
+        currentRate: r.band.rateBps / 100,
+        proposedRate: r.proposedBps / 100,
         effectiveFrom: r.effectiveFrom,
         reason: r.reason,
         status: r.status,
