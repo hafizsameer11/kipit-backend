@@ -14,7 +14,7 @@ import { hashSecret, koboToNaira, nairaToKobo } from "../lib/crypto.js";
 import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
-import { createUserNotification } from "../services/notify.js";
+import { createUserNotification, notifyAccountAccessChange } from "../services/notify.js";
 import {
   getConfigJson,
   setConfigJson,
@@ -229,6 +229,11 @@ adminResourcesRouter.patch(
       entityId: user.id,
       after: { frozen: body.frozen, reason: body.reason },
     });
+    await notifyAccountAccessChange({
+      userId: user.id,
+      frozen: body.frozen,
+      reason: body.reason,
+    }).catch((err) => console.warn("[admin] freeze notify failed", err));
     res.json({
       data: {
         id: user.id,
