@@ -391,17 +391,21 @@ model Placement {
 }
 
 model PayoutBank {
-  id            String   @id @default(cuid())
+  id            String    @id @default(cuid())
   userId        String
-  user          User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user          User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   bankCode      String
   bankName      String
   accountNumber String
   accountName   String
-  nameMatched   Boolean  @default(false)
-  createdAt     DateTime @default(now())
+  nameMatched   Boolean   @default(false)
+  /// Soft-remove so past withdrawals keep their bank FK; hidden from saved-account lists.
+  removedAt     DateTime?
+  createdAt     DateTime  @default(now())
 
   withdrawals   WithdrawalRequest[]
+
+  @@index([userId, removedAt])
 }
 
 model CardToken {
