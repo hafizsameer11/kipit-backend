@@ -15,6 +15,7 @@ import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
 import { createUserNotification, notifyAccountAccessChange } from "../services/notify.js";
+import { saveSupportAttachment } from "../services/uploads.js";
 import {
   getConfigJson,
   setConfigJson,
@@ -399,7 +400,10 @@ adminResourcesRouter.get(
   requireAdmin,
   asyncHandler(async (_req, res) => {
     const rows = await prisma.supportTicket.findMany({
-      include: { user: true },
+      include: {
+        user: true,
+        messages: { orderBy: { createdAt: "asc" }, take: 50 },
+      },
       orderBy: { updatedAt: "desc" },
       take: 100,
     });
@@ -414,12 +418,106 @@ adminResourcesRouter.get(
         attachmentName: t.attachmentName,
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
+        messages: t.messages.map((m) => ({
+          id: m.id,
+          author: m.author,
+          body: m.body,
+          attachmentUrl: m.attachmentUrl,
+          attachmentName: m.attachmentName,
+          createdAt: m.createdAt,
+        })),
         user: {
           id: t.userId,
           name: `${t.user.firstName} ${t.user.surname}`,
           email: t.user.email,
         },
       })),
+    });
+  }),
+);
+
+adminResourcesRouter.get(
+  "/support/tickets/:id",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const row = await prisma.supportTicket.findUnique({
+      where: { id: String(req.params.id) },
+      include: {
+        user: true,
+        messages: { orderBy: { createdAt: "asc" } },
+      },
+    });
+    if (!row) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+    const messages =
+      row.messages.length > 0
+        ? row.messages
+        : [
+            {
+              id: `legacy-${row.id}`,
+              author: "USER" as const,
+              body: row.body,
+              attachmentUrl: row.attachmentUrl,
+              attachmentName: row.attachmentName,
+              createdAt: row.createdAt,
+            },
+          ];
+    res.json({
+      data: {
+        id: row.id,
+        category: row.category,
+        subject: row.subject,
+        body: row.body,
+        status: row.status,
+        attachmentUrl: row.attachmentUrl,
+        attachmentName: row.attachmentName,
+        createdAt: row.createdAt,
+        updatedAt: row.updatedAt,
+        messages: messages.map((m) => ({
+          id: m.id,
+          author: m.author,
+          body: m.body,
+          attachmentUrl: m.attachmentUrl,
+          attachmentName: m.attachmentName,
+          createdAt: m.createdAt,
+        })),
+        user: {
+          id: row.userId,
+          name: `${row.user.firstName} ${row.user.surname}`,
+          email: row.user.email,
+        },
+      },
+    });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/support/tickets/:id/attachments",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const ticket = await prisma.supportTicket.findUnique({
+      where: { id: String(req.params.id) },
+    });
+    if (!ticket) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+    const body = z
+      .object({
+        contentType: z.string().min(3).max(100),
+        dataBase64: z.string().min(32),
+        filename: z.string().min(1).max(160).optional(),
+      })
+      .parse(req.body);
+    const saved = await saveSupportAttachment({
+      userId: ticket.userId,
+      contentType: body.contentType,
+      dataBase64: body.dataBase64,
+      originalName: body.filename,
+    });
+    res.status(201).json({
+      data: {
+        url: saved.url,
+        path: saved.relativePath,
+        bytes: saved.bytes,
+        filename: saved.filename,
+      },
     });
   }),
 );
@@ -433,12 +531,25 @@ adminResourcesRouter.patch(
         status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]).optional(),
         adminNote: z.string().optional(),
         reply: z.string().min(1).max(4000).optional(),
+        attachmentUrl: z.string().min(8).max(500).optional(),
+        attachmentName: z.string().min(1).max(160).optional(),
       })
       .parse(req.body);
     const existing = await prisma.supportTicket.findUnique({ where: { id: String(req.params.id) } });
     if (!existing) throw new AppError(404, "Ticket not found", "NOT_FOUND");
 
     const replyText = (body.reply ?? body.adminNote)?.trim();
+    const attachmentUrl = body.attachmentUrl?.trim();
+    const attachmentName = body.attachmentName?.trim() || undefined;
+    if (attachmentUrl && !attachmentUrl.includes(`/uploads/support/${existing.userId}/`)) {
+      throw new AppError(400, "Invalid attachment. Upload the file again.", "UPLOAD_INVALID");
+    }
+    if (!replyText && !attachmentUrl) {
+      // status-only update allowed
+    } else if (!replyText && attachmentUrl) {
+      throw new AppError(400, "Add a short reply with the attachment.", "REPLY_REQUIRED");
+    }
+
     if (replyText) {
       const count = await prisma.supportTicketMessage.count({ where: { ticketId: existing.id } });
       if (count === 0) {
@@ -447,12 +558,20 @@ adminResourcesRouter.patch(
             ticketId: existing.id,
             author: "USER",
             body: existing.body,
+            attachmentUrl: existing.attachmentUrl,
+            attachmentName: existing.attachmentName,
             createdAt: existing.createdAt,
           },
         });
       }
       await prisma.supportTicketMessage.create({
-        data: { ticketId: existing.id, author: "SUPPORT", body: replyText },
+        data: {
+          ticketId: existing.id,
+          author: "SUPPORT",
+          body: replyText,
+          attachmentUrl: attachmentUrl ?? null,
+          attachmentName: attachmentName ?? null,
+        },
       });
       await createUserNotification({
         userId: existing.userId,
