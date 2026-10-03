@@ -27,7 +27,7 @@ function stripDataUrl(raw: string): { mime?: string; base64: string } {
 
 async function saveUserUpload(input: {
   userId: string;
-  namespace: "kyc" | "support";
+  namespace: "kyc" | "support" | "product";
   prefix: string;
   contentType: string;
   dataBase64: string;
@@ -94,6 +94,22 @@ export async function saveSupportAttachment(input: {
     userId: input.userId,
     namespace: "support",
     prefix: "ticket",
+    contentType: input.contentType,
+    dataBase64: input.dataBase64,
+    originalName: input.originalName,
+  });
+}
+
+export async function saveProductDocument(input: {
+  adminId: string;
+  contentType: string;
+  dataBase64: string;
+  originalName?: string;
+}): Promise<{ url: string; relativePath: string; bytes: number; filename: string }> {
+  return saveUserUpload({
+    userId: input.adminId || "library",
+    namespace: "product",
+    prefix: "doc",
     contentType: input.contentType,
     dataBase64: input.dataBase64,
     originalName: input.originalName,
