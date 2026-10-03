@@ -1430,12 +1430,23 @@ adminRouter.patch(
         adminNote: z.string().optional(),
         reply: z.string().min(1).max(4000).optional(),
         assignee: z.string().optional(),
+        attachmentUrl: z.string().min(8).max(500).optional(),
+        attachmentName: z.string().min(1).max(160).optional(),
       })
       .parse(req.body);
     const existing = await prisma.supportTicket.findUnique({ where: { id: String(req.params.id) } });
     if (!existing) throw new AppError(404, "Ticket not found", "NOT_FOUND");
 
     const replyText = (body.reply ?? body.adminNote)?.trim();
+    const attachmentUrl = body.attachmentUrl?.trim();
+    const attachmentName = body.attachmentName?.trim() || undefined;
+    if (attachmentUrl && !attachmentUrl.includes(`/uploads/support/${existing.userId}/`)) {
+      throw new AppError(400, "Invalid attachment. Upload the file again.", "UPLOAD_INVALID");
+    }
+    if (attachmentUrl && !replyText) {
+      throw new AppError(400, "Add a short reply with the attachment.", "REPLY_REQUIRED");
+    }
+
     if (replyText) {
       const count = await prisma.supportTicketMessage.count({ where: { ticketId: existing.id } });
       if (count === 0) {
@@ -1444,12 +1455,20 @@ adminRouter.patch(
             ticketId: existing.id,
             author: "USER",
             body: existing.body,
+            attachmentUrl: existing.attachmentUrl,
+            attachmentName: existing.attachmentName,
             createdAt: existing.createdAt,
           },
         });
       }
       await prisma.supportTicketMessage.create({
-        data: { ticketId: existing.id, author: "SUPPORT", body: replyText },
+        data: {
+          ticketId: existing.id,
+          author: "SUPPORT",
+          body: replyText,
+          attachmentUrl: attachmentUrl ?? null,
+          attachmentName: attachmentName ?? null,
+        },
       });
       await notifyCustomer({
         userId: existing.userId,
@@ -1486,7 +1505,14 @@ adminRouter.patch(
         body: row.body,
         attachmentUrl: row.attachmentUrl,
         attachmentName: row.attachmentName,
-        messages: row.messages,
+        messages: row.messages.map((m) => ({
+          id: m.id,
+          author: m.author,
+          body: m.body,
+          attachmentUrl: m.attachmentUrl,
+          attachmentName: m.attachmentName,
+          createdAt: m.createdAt,
+        })),
         user: { id: row.userId, name: `${row.user.firstName} ${row.user.surname}` },
       },
     });
