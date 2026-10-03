@@ -554,19 +554,24 @@ model FeedCard {
 }
 
 model SupportTicket {
-  id             String                 @id @default(cuid())
-  userId         String
-  user           User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
-  category       String
-  subject        String
-  body           String
+  id              String                 @id @default(cuid())
+  userId          String
+  user            User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  category        String
+  subject         String
+  body            String
   /// Optional screenshot / PDF from the user (public URL under /uploads/support/…)
-  attachmentUrl  String?
-  attachmentName String?
-  status         TicketStatus           @default(OPEN)
-  createdAt      DateTime               @default(now())
-  updatedAt      DateTime               @updatedAt
-  messages       SupportTicketMessage[]
+  attachmentUrl   String?
+  attachmentName  String?
+  /// Admin operator responsible for this ticket (Team → Support)
+  assigneeAdminId String?
+  assigneeAdmin   AdminUser?             @relation("TicketAssignee", fields: [assigneeAdminId], references: [id], onDelete: SetNull)
+  status          TicketStatus           @default(OPEN)
+  createdAt       DateTime               @default(now())
+  updatedAt       DateTime               @updatedAt
+  messages        SupportTicketMessage[]
+
+  @@index([assigneeAdminId])
 }
 
 model SupportTicketMessage {
@@ -618,6 +623,7 @@ model AdminUser {
   createdAt     DateTime  @default(now())
   updatedAt     DateTime  @updatedAt
   sessions      AdminSession[]
+  assignedTickets SupportTicket[] @relation("TicketAssignee")
 }
 
 model AdminSession {

@@ -18,7 +18,13 @@ import {
   type AdminRequest,
 } from "../middleware/admin.js";
 import { listSignupDropoffs } from "../services/signup-funnel.js";
-import { sendWelcomeEmail, notifyCustomer, notifyAccountAccessChange, sendAdminInviteEmail } from "../services/notify.js";
+import {
+  sendWelcomeEmail,
+  notifyCustomer,
+  notifyAccountAccessChange,
+  sendAdminInviteEmail,
+  sendTicketAssignedEmail,
+} from "../services/notify.js";
 import { requestOtp, verifyOtp } from "../services/auth.js";
 import { productDetailsSchema, toPrismaJson, asProductDetails } from "../lib/product-details.js";
 import jwt from "jsonwebtoken";
@@ -1341,7 +1347,7 @@ adminRouter.get(
   requireAdmin,
   asyncHandler(async (_req, res) => {
     const rows = await prisma.supportTicket.findMany({
-      include: { user: true },
+      include: { user: true, assigneeAdmin: { select: { id: true, name: true, email: true } } },
       orderBy: { updatedAt: "desc" },
       take: 100,
     });
@@ -1354,6 +1360,10 @@ adminRouter.get(
         status: t.status,
         attachmentUrl: t.attachmentUrl,
         attachmentName: t.attachmentName,
+        assigneeAdminId: t.assigneeAdminId,
+        assignee: t.assigneeAdmin
+          ? { id: t.assigneeAdmin.id, name: t.assigneeAdmin.name, email: t.assigneeAdmin.email }
+          : null,
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
         user: {
@@ -1429,13 +1439,31 @@ adminRouter.patch(
         status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]).optional(),
         adminNote: z.string().optional(),
         reply: z.string().min(1).max(4000).optional(),
-        assignee: z.string().optional(),
+        /** Real Team admin id — null clears assignee. */
+        assigneeAdminId: z.string().nullable().optional(),
         attachmentUrl: z.string().min(8).max(500).optional(),
         attachmentName: z.string().min(1).max(160).optional(),
       })
       .parse(req.body);
-    const existing = await prisma.supportTicket.findUnique({ where: { id: String(req.params.id) } });
+    const existing = await prisma.supportTicket.findUnique({
+      where: { id: String(req.params.id) },
+      include: { user: true },
+    });
     if (!existing) throw new AppError(404, "Ticket not found", "NOT_FOUND");
+
+    let assigneeAdmin: { id: string; name: string; email: string } | null | undefined;
+    if (body.assigneeAdminId !== undefined) {
+      if (body.assigneeAdminId === null) {
+        assigneeAdmin = null;
+      } else {
+        const admin = await prisma.adminUser.findFirst({
+          where: { id: body.assigneeAdminId, active: true },
+          select: { id: true, name: true, email: true },
+        });
+        if (!admin) throw new AppError(400, "Assignee not found or inactive", "ASSIGNEE_INVALID");
+        assigneeAdmin = admin;
+      }
+    }
 
     const replyText = (body.reply ?? body.adminNote)?.trim();
     const attachmentUrl = body.attachmentUrl?.trim();
@@ -1482,10 +1510,43 @@ adminRouter.patch(
     const row = await prisma.supportTicket.update({
       where: { id: existing.id },
       data: {
-        status: body.status ?? (replyText ? "IN_PROGRESS" : undefined),
+        status:
+          body.status ??
+          (replyText || (body.assigneeAdminId !== undefined && body.assigneeAdminId)
+            ? "IN_PROGRESS"
+            : undefined),
+        ...(body.assigneeAdminId !== undefined
+          ? { assigneeAdminId: body.assigneeAdminId }
+          : {}),
       },
-      include: { user: true, messages: { orderBy: { createdAt: "asc" } } },
+      include: {
+        user: true,
+        assigneeAdmin: { select: { id: true, name: true, email: true } },
+        messages: { orderBy: { createdAt: "asc" } },
+      },
     });
+
+    if (
+      assigneeAdmin &&
+      assigneeAdmin.id !== existing.assigneeAdminId &&
+      assigneeAdmin.id !== req.adminId
+    ) {
+      const assigner = req.adminId
+        ? await prisma.adminUser.findUnique({
+            where: { id: req.adminId },
+            select: { name: true },
+          })
+        : null;
+      await sendTicketAssignedEmail({
+        to: assigneeAdmin.email,
+        assigneeName: assigneeAdmin.name,
+        subject: row.subject,
+        ticketId: row.id,
+        customerName: `${row.user.firstName} ${row.user.surname}`.trim(),
+        assignedBy: assigner?.name,
+      }).catch((err) => console.warn("[ticket-assign-email]", err));
+    }
+
     await writeAudit({
       actorAdminId: req.adminId,
       action: "support.ticket.updated",
@@ -1494,7 +1555,8 @@ adminRouter.patch(
       after: {
         status: row.status,
         replied: Boolean(replyText),
-        assignee: body.assignee,
+        assigneeAdminId: row.assigneeAdminId,
+        assigneeName: row.assigneeAdmin?.name ?? null,
       },
     });
     res.json({
@@ -1505,6 +1567,10 @@ adminRouter.patch(
         body: row.body,
         attachmentUrl: row.attachmentUrl,
         attachmentName: row.attachmentName,
+        assigneeAdminId: row.assigneeAdminId,
+        assignee: row.assigneeAdmin
+          ? { id: row.assigneeAdmin.id, name: row.assigneeAdmin.name, email: row.assigneeAdmin.email }
+          : null,
         messages: row.messages.map((m) => ({
           id: m.id,
           author: m.author,

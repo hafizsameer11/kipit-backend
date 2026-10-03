@@ -84,6 +84,45 @@ export async function sendAdminInviteEmail(input: {
   return sendEmail({ to: input.to, subject, text, html });
 }
 
+export async function sendTicketAssignedEmail(input: {
+  to: string;
+  assigneeName: string;
+  subject: string;
+  ticketId: string;
+  customerName: string;
+  assignedBy?: string;
+}) {
+  const name = input.assigneeName.trim() || "there";
+  const ref = input.ticketId.slice(0, 8).toUpperCase();
+  const subject = `Support ticket assigned · ${ref}`;
+  const text = [
+    `Hi ${name},`,
+    "",
+    `Ticket ${ref} was assigned to you${input.assignedBy ? ` by ${input.assignedBy}` : ""}.`,
+    `Customer: ${input.customerName}`,
+    `Subject: ${input.subject}`,
+    "",
+    "Open Support in the Kipit admin console to reply.",
+    "",
+    "— Kipit Operations",
+  ].join("\n");
+  const html = brandWrap(
+    "Ticket assigned to you",
+    `
+      <p style="margin:0 0 12px">Hi ${name},</p>
+      <p style="margin:0 0 12px">
+        Ticket <strong>${ref}</strong> was assigned to you${
+          input.assignedBy ? ` by <strong>${input.assignedBy}</strong>` : ""
+        }.
+      </p>
+      <p style="margin:0 0 8px"><strong>Customer:</strong> ${input.customerName}</p>
+      <p style="margin:0 0 12px"><strong>Subject:</strong> ${input.subject}</p>
+      <p style="margin:0;color:#64748b">Open <strong>Support</strong> in the admin console to reply.</p>
+    `,
+  );
+  return sendEmail({ to: input.to, subject, text, html });
+}
+
 export async function sendCustomerTxnEmail(input: {
   to: string;
   firstName: string;

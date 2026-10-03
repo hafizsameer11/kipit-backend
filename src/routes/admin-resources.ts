@@ -402,6 +402,7 @@ adminResourcesRouter.get(
     const rows = await prisma.supportTicket.findMany({
       include: {
         user: true,
+        assigneeAdmin: { select: { id: true, name: true, email: true } },
         messages: { orderBy: { createdAt: "asc" }, take: 50 },
       },
       orderBy: { updatedAt: "desc" },
@@ -416,6 +417,10 @@ adminResourcesRouter.get(
         status: t.status,
         attachmentUrl: t.attachmentUrl,
         attachmentName: t.attachmentName,
+        assigneeAdminId: t.assigneeAdminId,
+        assignee: t.assigneeAdmin
+          ? { id: t.assigneeAdmin.id, name: t.assigneeAdmin.name, email: t.assigneeAdmin.email }
+          : null,
         createdAt: t.createdAt,
         updatedAt: t.updatedAt,
         messages: t.messages.map((m) => ({
@@ -444,6 +449,7 @@ adminResourcesRouter.get(
       where: { id: String(req.params.id) },
       include: {
         user: true,
+        assigneeAdmin: { select: { id: true, name: true, email: true } },
         messages: { orderBy: { createdAt: "asc" } },
       },
     });
@@ -470,6 +476,10 @@ adminResourcesRouter.get(
         status: row.status,
         attachmentUrl: row.attachmentUrl,
         attachmentName: row.attachmentName,
+        assigneeAdminId: row.assigneeAdminId,
+        assignee: row.assigneeAdmin
+          ? { id: row.assigneeAdmin.id, name: row.assigneeAdmin.name, email: row.assigneeAdmin.email }
+          : null,
         createdAt: row.createdAt,
         updatedAt: row.updatedAt,
         messages: messages.map((m) => ({
