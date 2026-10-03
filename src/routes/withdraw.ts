@@ -33,7 +33,10 @@ withdrawRouter.get(
   requireAuth,
   requireKyc("TIER_2"),
   asyncHandler(async (req: AuthRequest, res) => {
-    const accounts = await prisma.payoutBank.findMany({ where: { userId: req.userId! } });
+    const accounts = await prisma.payoutBank.findMany({
+      where: { userId: req.userId!, removedAt: null },
+      orderBy: { createdAt: "asc" },
+    });
     res.json({
       data: accounts.map((a) => ({
         id: a.id,
@@ -54,16 +57,33 @@ withdrawRouter.delete(
   asyncHandler(async (req: AuthRequest, res) => {
     const id = String(req.params.id || "");
     const account = await prisma.payoutBank.findFirst({
-      where: { id, userId: req.userId! },
+      where: { id, userId: req.userId!, removedAt: null },
     });
     if (!account) throw new AppError(404, "Payout account not found", "NOT_FOUND");
-    await prisma.payoutBank.delete({ where: { id: account.id } });
+
+    const pending = await prisma.withdrawalRequest.count({
+      where: { payoutBankId: account.id, status: "PROCESSING" },
+    });
+    // Only block if a live withdrawal still needs this destination.
+    if (pending > 0) {
+      throw new AppError(
+        400,
+        "This account has a withdrawal in progress. Wait until it settles, then try again.",
+        "PAYOUT_IN_USE",
+      );
+    }
+
+    // Soft-delete: hard delete fails when past WithdrawalRequest rows still reference the bank.
+    await prisma.payoutBank.update({
+      where: { id: account.id },
+      data: { removedAt: new Date() },
+    });
     await writeAudit({
       actorUserId: req.userId,
       action: "payout_bank.delete",
       entityType: "PayoutBank",
       entityId: account.id,
-      after: { bankCode: account.bankCode, accountNumber: account.accountNumber },
+      after: { bankCode: account.bankCode, accountNumber: account.accountNumber, soft: true },
     });
     res.json({ data: { ok: true } });
   }),
@@ -122,14 +142,26 @@ withdrawRouter.post(
       },
     });
     if (existing) {
+      const restored =
+        existing.removedAt != null
+          ? await prisma.payoutBank.update({
+              where: { id: existing.id },
+              data: {
+                removedAt: null,
+                accountName: resolved.accountName.toUpperCase(),
+                bankName: bank.name,
+                nameMatched: true,
+              },
+            })
+          : existing;
       res.status(200).json({
         data: {
-          id: existing.id,
-          bankName: existing.bankName,
-          bankCode: existing.bankCode,
-          accountNumber: existing.accountNumber,
-          accountName: existing.accountName,
-          nameMatched: existing.nameMatched,
+          id: restored.id,
+          bankName: restored.bankName,
+          bankCode: restored.bankCode,
+          accountNumber: restored.accountNumber,
+          accountName: restored.accountName,
+          nameMatched: restored.nameMatched,
         },
       });
       return;
