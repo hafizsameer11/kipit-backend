@@ -15,7 +15,7 @@ import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
 import { createUserNotification, notifyAccountAccessChange } from "../services/notify.js";
-import { saveSupportAttachment } from "../services/uploads.js";
+import { saveProductDocument, saveSupportAttachment } from "../services/uploads.js";
 import {
   getConfigJson,
   setConfigJson,
@@ -613,6 +613,34 @@ adminResourcesRouter.patch(
           createdAt: m.createdAt,
         })),
         user: { id: row.userId, name: `${row.user.firstName} ${row.user.surname}` },
+      },
+    });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/products/attachments",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        contentType: z.string().min(3).max(100),
+        dataBase64: z.string().min(32),
+        filename: z.string().min(1).max(160).optional(),
+      })
+      .parse(req.body);
+    const saved = await saveProductDocument({
+      adminId: req.adminId || "library",
+      contentType: body.contentType,
+      dataBase64: body.dataBase64,
+      originalName: body.filename,
+    });
+    res.status(201).json({
+      data: {
+        url: saved.url,
+        path: saved.relativePath,
+        bytes: saved.bytes,
+        filename: saved.filename,
       },
     });
   }),

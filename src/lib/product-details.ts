@@ -11,7 +11,15 @@ export const productDetailsSchema = z
         z.object({
           name: z.string().min(1),
           meta: z.string().optional().default(""),
-          url: z.string().optional().default(""),
+          // Reject huge data: URLs — files must be uploaded via /v1/admin/products/attachments.
+          url: z
+            .string()
+            .max(500)
+            .optional()
+            .default("")
+            .refine((v) => !v || !/^data:/i.test(v), {
+              message: "Upload the file instead of pasting base64",
+            }),
         }),
       )
       .optional(),
