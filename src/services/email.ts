@@ -24,11 +24,19 @@ function getTransporter() {
   return transporter;
 }
 
+export type SendEmailAttachment = {
+  filename: string;
+  content: Buffer | string;
+  contentType?: string;
+};
+
 export type SendEmailInput = {
   to: string;
   subject: string;
   text: string;
   html?: string;
+  /** Optional — existing callers omit this; SMTP only for now. */
+  attachments?: SendEmailAttachment[];
 };
 
 /** Shared Kipit branded HTML shell for all customer emails. */
@@ -88,6 +96,11 @@ export async function sendEmail(input: SendEmailInput) {
       subject: input.subject,
       text: input.text,
       html: input.html ?? input.text.replace(/\n/g, "<br/>"),
+      attachments: input.attachments?.map((a) => ({
+        filename: a.filename,
+        content: a.content,
+        contentType: a.contentType,
+      })),
     });
     return { id: info.messageId, provider: "smtp" as const };
   }
@@ -98,6 +111,7 @@ export async function sendEmail(input: SendEmailInput) {
     to: input.to,
     subject: input.subject,
     text: input.text,
+    attachments: input.attachments?.map((a) => a.filename) ?? [],
   });
   return { id: `console-${Date.now()}`, provider: "console" as const };
 }

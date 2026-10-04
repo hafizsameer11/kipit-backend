@@ -79,6 +79,10 @@ meRouter.get(
                 Math.ceil((next.maturityDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
               ),
               tenorDays: next.tenorDays,
+              // Additive — older app/web clients ignore; avoids client join to holdings.
+              ratePct: next.rateBps / 100,
+              startDate: next.startDate.toISOString().slice(0, 10),
+              accrued: koboToNaira(next.accruedKobo),
             }
           : null,
         holdings: placements.slice(0, 5).map((p) => ({
