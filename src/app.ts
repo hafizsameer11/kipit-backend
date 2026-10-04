@@ -31,7 +31,12 @@ import { requestContextMiddleware } from "./lib/request-context.js";
 export function createApp() {
   const app = express();
 
-  app.use(helmet());
+  // Allow admin/web apps on other origins to embed /uploads images (ticket attachments, KYC).
+  app.use(
+    helmet({
+      crossOriginResourcePolicy: { policy: "cross-origin" },
+    }),
+  );
   app.use(cors({ origin: true, credentials: true }));
   app.use(requestContextMiddleware);
 
@@ -65,6 +70,8 @@ export function createApp() {
       maxAge: "7d",
       setHeaders(res) {
         res.setHeader("X-Content-Type-Options", "nosniff");
+        res.setHeader("Cross-Origin-Resource-Policy", "cross-origin");
+        res.setHeader("Access-Control-Allow-Origin", "*");
         res.setHeader("Cache-Control", "private, max-age=604800");
       },
     }),
