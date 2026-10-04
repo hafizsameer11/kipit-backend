@@ -175,6 +175,7 @@ model User {
   autoInvestRules  AutoInvestRule[]
   notificationPrefs NotificationPref?
   pushDevices      PushDevice[]
+  feedViews        FeedCardView[]
 }
 
 /** Expo / FCM push tokens registered by the mobile app. */
@@ -549,14 +550,28 @@ model LearnArticle {
 }
 
 model FeedCard {
-  id        String   @id @default(cuid())
+  id        String         @id @default(cuid())
   title     String
   body      String
   kind      String
   href      String?
-  active    Boolean  @default(true)
-  sortOrder Int      @default(0)
+  active    Boolean        @default(true)
+  sortOrder Int            @default(0)
+  createdAt DateTime       @default(now())
+  views     FeedCardView[]
+}
+
+/// One row per account that was sent a published home-feed card.
+model FeedCardView {
+  id        String   @id @default(cuid())
+  cardId    String
+  card      FeedCard @relation(fields: [cardId], references: [id], onDelete: Cascade)
+  userId    String
+  user      User     @relation(fields: [userId], references: [id], onDelete: Cascade)
   createdAt DateTime @default(now())
+
+  @@unique([cardId, userId])
+  @@index([cardId])
 }
 
 model SupportTicket {

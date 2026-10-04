@@ -161,12 +161,19 @@ export function createApp() {
   app.get(
     "/v1/home/feed",
     requireAuth,
-    asyncHandler(async (_req: AuthRequest, res) => {
+    asyncHandler(async (req: AuthRequest, res) => {
       const { prisma } = await import("./lib/prisma.js");
+      const { recordFeedImpressions } = await import("./services/feed-impressions.js");
       const cards = await prisma.feedCard.findMany({
         where: { active: true },
         orderBy: { sortOrder: "asc" },
       });
+      if (req.userId) {
+        void recordFeedImpressions(
+          req.userId,
+          cards.map((card) => card.id),
+        ).catch(() => undefined);
+      }
       res.json({ data: cards });
     }),
   );
