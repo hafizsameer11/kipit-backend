@@ -6,6 +6,7 @@ import { prisma } from "../lib/prisma.js";
 import { publicUser } from "../services/auth.js";
 import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { koboToNaira } from "../lib/crypto.js";
+import { recordFeedImpressions } from "../services/feed-impressions.js";
 
 export const meRouter = Router();
 
@@ -29,6 +30,10 @@ meRouter.get(
       orderBy: { sortOrder: "asc" },
       take: 10,
     });
+    void recordFeedImpressions(
+      user.id,
+      feed.map((card) => card.id),
+    ).catch(() => undefined);
 
     res.json({
       data: {

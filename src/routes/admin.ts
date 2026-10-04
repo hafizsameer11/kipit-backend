@@ -1773,8 +1773,18 @@ adminRouter.get(
   "/marketing/feed",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    const rows = await prisma.feedCard.findMany({ orderBy: { sortOrder: "asc" } });
-    res.json({ data: rows });
+    const { backfillFeedImpressions } = await import("../services/feed-impressions.js");
+    await backfillFeedImpressions();
+    const rows = await prisma.feedCard.findMany({
+      orderBy: { sortOrder: "asc" },
+      include: { _count: { select: { views: true } } },
+    });
+    res.json({
+      data: rows.map(({ _count, ...row }) => ({
+        ...row,
+        impressions: _count.views,
+      })),
+    });
   }),
 );
 
