@@ -19,12 +19,90 @@ withdrawRouter.use(rejectIfMaintenance);
 
 const NAME_MATCH_MIN = 0.5;
 
+async function resolveAndMatchAccount(input: {
+  userId: string;
+  bankCode: string;
+  accountNumber: string;
+}) {
+  const banks = await listPaystackBanks();
+  const bank = banks.find((b) => b.code === input.bankCode);
+  if (!bank) throw new AppError(400, "Unknown bank", "BANK_UNKNOWN");
+
+  const user = await prisma.user.findUniqueOrThrow({
+    where: { id: input.userId },
+    include: { kycProfile: true },
+  });
+  const profileName = [user.firstName, user.middleName, user.surname]
+    .filter(Boolean)
+    .join(" ")
+    .trim();
+  const bvnName = user.kycProfile?.bvnName?.trim() || "";
+  const ninName = user.kycProfile?.ninName?.trim() || "";
+
+  const resolved = await resolvePaystackAccount({
+    accountNumber: input.accountNumber,
+    bankCode: input.bankCode,
+    mockAccountName: paystackUseMock() ? profileName : undefined,
+  });
+
+  const candidates = [profileName, bvnName, ninName].filter(Boolean);
+  const bestScore = Math.max(0, ...candidates.map((name) => fuzzyScore(name, resolved.accountName)));
+  const nameMatched = bestScore >= NAME_MATCH_MIN;
+
+  if (!nameMatched) {
+    throw new AppError(
+      400,
+      `Account name does not match your Kipit profile. This account shows as “${resolved.accountName}”. Use an account in your legal name.`,
+      "ACCOUNT_NAME_MISMATCH",
+    );
+  }
+
+  return {
+    bank,
+    resolved,
+    bestScore,
+    nameMatched: true as const,
+  };
+}
+
 withdrawRouter.get(
   "/banks",
   requireAuth,
   asyncHandler(async (_req, res) => {
     const banks = await listPaystackBanks();
     res.json({ data: banks });
+  }),
+);
+
+/** Resolve + name-match only — does NOT create a PayoutBank row (app-safe additive route). */
+withdrawRouter.post(
+  "/accounts/resolve",
+  requireAuth,
+  requireKyc("TIER_2"),
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        bankCode: z.string().min(2),
+        accountNumber: z.string().min(10).max(10),
+      })
+      .parse(req.body);
+
+    const { bank, resolved, bestScore, nameMatched } = await resolveAndMatchAccount({
+      userId: req.userId!,
+      bankCode: body.bankCode,
+      accountNumber: body.accountNumber,
+    });
+
+    res.json({
+      data: {
+        bankCode: bank.code,
+        bankName: bank.name,
+        accountNumber: resolved.accountNumber,
+        accountName: resolved.accountName.toUpperCase(),
+        nameMatched,
+        matchScore: bestScore,
+      },
+    });
   }),
 );
 
@@ -101,38 +179,11 @@ withdrawRouter.post(
       })
       .parse(req.body);
 
-    const banks = await listPaystackBanks();
-    const bank = banks.find((b) => b.code === body.bankCode);
-    if (!bank) throw new AppError(400, "Unknown bank", "BANK_UNKNOWN");
-
-    const user = await prisma.user.findUniqueOrThrow({
-      where: { id: req.userId! },
-      include: { kycProfile: true },
-    });
-    const profileName = [user.firstName, user.middleName, user.surname]
-      .filter(Boolean)
-      .join(" ")
-      .trim();
-    const bvnName = user.kycProfile?.bvnName?.trim() || "";
-    const ninName = user.kycProfile?.ninName?.trim() || "";
-
-    const resolved = await resolvePaystackAccount({
-      accountNumber: body.accountNumber,
+    const { bank, resolved, bestScore } = await resolveAndMatchAccount({
+      userId: req.userId!,
       bankCode: body.bankCode,
-      mockAccountName: paystackUseMock() ? profileName : undefined,
+      accountNumber: body.accountNumber,
     });
-
-    const candidates = [profileName, bvnName, ninName].filter(Boolean);
-    const bestScore = Math.max(0, ...candidates.map((name) => fuzzyScore(name, resolved.accountName)));
-    const nameMatched = bestScore >= NAME_MATCH_MIN;
-
-    if (!nameMatched) {
-      throw new AppError(
-        400,
-        `Account name does not match your Kipit profile. This account shows as “${resolved.accountName}”. Use an account in your legal name.`,
-        "ACCOUNT_NAME_MISMATCH",
-      );
-    }
 
     const existing = await prisma.payoutBank.findFirst({
       where: {

@@ -5,7 +5,13 @@ import type { AuthRequest } from "../middleware/auth.js";
 import { requireAuth } from "../middleware/auth.js";
 import { prisma } from "../lib/prisma.js";
 import { koboToNaira } from "../lib/crypto.js";
-import { ensureUserCall, ensureUserWallet, getWalletBalanceKobo } from "../services/money.js";
+import { asProductDetails } from "../lib/product-details.js";
+import {
+  ensureUserCall,
+  ensureUserWallet,
+  getWalletBalanceKobo,
+  interestForPeriod,
+} from "../services/money.js";
 
 export const portfolioRouter = Router();
 
@@ -41,8 +47,13 @@ portfolioRouter.get(
           principal: koboToNaira(p.principalKobo),
           ratePct: p.rateBps / 100,
           tenorDays: p.tenorDays,
+          startDate: p.startDate.toISOString().slice(0, 10),
           maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
           accrued: koboToNaira(p.accruedKobo),
+          expectedInterest:
+            p.tenorDays != null
+              ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+              : null,
           status: p.status,
         })),
       },
@@ -59,6 +70,14 @@ portfolioRouter.get(
       include: { product: true },
     });
     if (!p) throw new AppError(404, "Holding not found", "NOT_FOUND");
+    const details = p.product ? asProductDetails(p.product.details) : null;
+    const documents = (details?.documents ?? [])
+      .filter((d) => d.name)
+      .map((d) => ({
+        name: d.name,
+        meta: d.meta ?? "",
+        url: d.url ?? "",
+      }));
     res.json({
       data: {
         id: p.id,
@@ -70,8 +89,14 @@ portfolioRouter.get(
         startDate: p.startDate.toISOString().slice(0, 10),
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
         accrued: koboToNaira(p.accruedKobo),
+        expectedInterest:
+          p.tenorDays != null
+            ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+            : null,
         status: p.status,
         maturityInstruction: p.maturityInstruction,
+        // Additive — empty when no product docs; clients keep local fallbacks.
+        documents,
         product: p.product
           ? { id: p.product.id, name: p.product.name, slug: p.product.slug }
           : null,

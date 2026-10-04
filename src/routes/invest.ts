@@ -42,6 +42,40 @@ const BAND_MINIMUM_NAIRA: Record<string, number> = {
   "365+": 250_000,
 };
 
+const AUTO_INVEST_FREQUENCIES = ["Weekly", "Every 2 weeks", "Monthly"] as const;
+type AutoInvestFrequency = (typeof AUTO_INVEST_FREQUENCIES)[number];
+
+function parseFrequencyFromLabel(label: string): AutoInvestFrequency | null {
+  const freqMatch = label.match(/^(Weekly|Every 2 weeks|Monthly)\s*·\s*(.*)$/);
+  return freqMatch ? (freqMatch[1] as AutoInvestFrequency) : null;
+}
+
+function stripFrequencyPrefix(label: string): string {
+  const freqMatch = label.match(/^(Weekly|Every 2 weeks|Monthly)\s*·\s*(.*)$/);
+  return freqMatch ? freqMatch[2] : label;
+}
+
+/** Next run date (YYYY-MM-DD) from frequency + dayOfMonth — additive field for clients. */
+function nextAutoInvestRunDate(frequency: AutoInvestFrequency, dayOfMonth: number): string {
+  const now = new Date();
+  const day = Math.min(Math.max(dayOfMonth, 1), 28);
+  if (frequency === "Weekly") {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 7);
+    return d.toISOString().slice(0, 10);
+  }
+  if (frequency === "Every 2 weeks") {
+    const d = new Date(now);
+    d.setDate(d.getDate() + 14);
+    return d.toISOString().slice(0, 10);
+  }
+  const candidate = new Date(now.getFullYear(), now.getMonth(), day);
+  if (candidate.getTime() <= now.getTime()) {
+    candidate.setMonth(candidate.getMonth() + 1);
+  }
+  return candidate.toISOString().slice(0, 10);
+}
+
 const BAND_PRODUCT_NAMES: Record<string, string> = {
   CALL: "Kipit Call Account",
   "1-90": "Kipit Starter",
@@ -308,8 +342,14 @@ investRouter.get(
         principal: koboToNaira(p.principalKobo),
         ratePct: p.rateBps / 100,
         tenorDays: p.tenorDays,
+        // Additive — detail route already had startDate; list parity for history screens.
+        startDate: p.startDate.toISOString().slice(0, 10),
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
         accrued: koboToNaira(p.accruedKobo),
+        expectedInterest:
+          p.tenorDays != null
+            ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+            : null,
         maturityInstruction: p.maturityInstruction,
       })),
     });
@@ -323,14 +363,18 @@ investRouter.get(
     const rules = await prisma.autoInvestRule.findMany({ where: { userId: req.userId! } });
     res.json({
       data: rules.map((r) => {
-        const freqMatch = r.label.match(/^(Weekly|Every 2 weeks|Monthly)\s*·\s*(.*)$/);
+        const fromLabel = parseFrequencyFromLabel(r.label);
+        const frequency = (AUTO_INVEST_FREQUENCIES.includes(r.frequency as AutoInvestFrequency)
+          ? r.frequency
+          : fromLabel ?? "Monthly") as AutoInvestFrequency;
         return {
           id: r.id,
-          label: freqMatch ? freqMatch[2] : r.label,
+          label: stripFrequencyPrefix(r.label),
           amount: koboToNaira(r.amountKobo),
           dayOfMonth: r.dayOfMonth,
           active: r.active,
-          frequency: freqMatch ? freqMatch[1] : "Monthly",
+          frequency,
+          nextRun: r.active ? nextAutoInvestRunDate(frequency, r.dayOfMonth) : null,
         };
       }),
     });
@@ -350,16 +394,25 @@ investRouter.post(
         frequency: z.enum(["Weekly", "Every 2 weeks", "Monthly"]).optional(),
       })
       .parse(req.body);
-    const label = body.frequency ? `${body.frequency} · ${body.label}` : body.label;
+    const frequency = body.frequency ?? "Monthly";
+    // Keep label prefix so older app builds that only parse the label still work.
+    const label = `${frequency} · ${body.label}`;
     const rule = await prisma.autoInvestRule.create({
       data: {
         userId: req.userId!,
         label,
         amountKobo: nairaToKobo(body.amount),
         dayOfMonth: body.dayOfMonth,
+        frequency,
       },
     });
-    res.status(201).json({ data: { id: rule.id, frequency: body.frequency ?? "Monthly" } });
+    res.status(201).json({
+      data: {
+        id: rule.id,
+        frequency,
+        nextRun: nextAutoInvestRunDate(frequency, rule.dayOfMonth),
+      },
+    });
   }),
 );
 
@@ -376,13 +429,19 @@ investRouter.patch(
       where: { id: existing.id },
       data: { active: body.active },
     });
+    const fromLabel = parseFrequencyFromLabel(rule.label);
+    const frequency = (AUTO_INVEST_FREQUENCIES.includes(rule.frequency as AutoInvestFrequency)
+      ? rule.frequency
+      : fromLabel ?? "Monthly") as AutoInvestFrequency;
     res.json({
       data: {
         id: rule.id,
-        label: rule.label,
+        label: stripFrequencyPrefix(rule.label),
         amount: koboToNaira(rule.amountKobo),
         dayOfMonth: rule.dayOfMonth,
         active: rule.active,
+        frequency,
+        nextRun: rule.active ? nextAutoInvestRunDate(frequency, rule.dayOfMonth) : null,
       },
     });
   }),

@@ -18,8 +18,18 @@ import {
   isOwnSupportUploadUrl,
   saveSupportAttachment,
 } from "../services/uploads.js";
+import { brandWrap, sendEmail } from "../services/email.js";
 
 export const settingsRouter = Router();
+
+const STATEMENT_KINDS = [
+  "Account statement",
+  "Transaction statement",
+  "Portfolio statement",
+] as const;
+
+/** Max decoded attachment size (~4MB) so SMTP stays reliable. */
+const MAX_STATEMENT_ATTACHMENT_BYTES = 4 * 1024 * 1024;
 
 settingsRouter.get(
   "/profile",
@@ -717,6 +727,104 @@ settingsRouter.post(
         createdAt: message.createdAt,
       },
     });
+  }),
+);
+
+/**
+ * Email a statement with an attached file the client already generated.
+ * Additive endpoint — app/web mailto flows stay unchanged until they opt in.
+ */
+settingsRouter.post(
+  "/statements/email",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        kind: z.enum(STATEMENT_KINDS),
+        from: z.string().min(8).max(32),
+        to: z.string().min(8).max(32),
+        filename: z.string().min(3).max(120).optional(),
+        /** Base64 (optional data: URL prefix). HTML or PDF from the client. */
+        contentBase64: z.string().min(20).max(8_000_000),
+        contentType: z
+          .enum(["text/html", "application/pdf", "application/octet-stream"])
+          .optional()
+          .default("text/html"),
+        summary: z.string().max(2000).optional(),
+      })
+      .parse(req.body);
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
+    if (!user.email) {
+      throw new AppError(400, "Add an email to your account before emailing statements", "EMAIL_REQUIRED");
+    }
+
+    const raw = body.contentBase64.includes(",")
+      ? body.contentBase64.slice(body.contentBase64.indexOf(",") + 1)
+      : body.contentBase64;
+    let content: Buffer;
+    try {
+      content = Buffer.from(raw, "base64");
+    } catch {
+      throw new AppError(400, "Invalid statement attachment encoding", "INVALID_ATTACHMENT");
+    }
+    if (!content.length || content.length > MAX_STATEMENT_ATTACHMENT_BYTES) {
+      throw new AppError(
+        400,
+        "Statement attachment must be under 4 MB",
+        "ATTACHMENT_TOO_LARGE",
+      );
+    }
+
+    const safeKind = body.kind.replace(/[^\w\s-]/g, "").trim() || "Statement";
+    const filename =
+      body.filename?.replace(/[^\w.\- ]+/g, "_") ||
+      `kipit-${safeKind.toLowerCase().replace(/\s+/g, "-")}.html`;
+    const period = `${body.from} to ${body.to}`;
+    const summary =
+      body.summary?.trim() ||
+      `Your Kipit ${body.kind.toLowerCase()} for ${period} is attached.`;
+
+    const subject = `Kipit ${body.kind} · ${period}`;
+    const text = [
+      `Hi ${user.firstName || "there"},`,
+      "",
+      summary,
+      "",
+      "The statement file is attached to this email.",
+      "",
+      "— Kipit Asset Management Limited",
+    ].join("\n");
+    const html = brandWrap(
+      body.kind,
+      `<p style="margin:0 0 12px">Hi ${user.firstName || "there"},</p>
+       <p style="margin:0 0 12px">${summary}</p>
+       <p style="margin:0;color:#64748b;font-size:13px">Period: <strong>${period}</strong>. The file is attached.</p>`,
+    );
+
+    const sent = await sendEmail({
+      to: user.email,
+      subject,
+      text,
+      html,
+      attachments: [
+        {
+          filename,
+          content,
+          contentType: body.contentType,
+        },
+      ],
+    });
+
+    await writeAudit({
+      actorUserId: user.id,
+      action: "user.statement_email",
+      entityType: "User",
+      entityId: user.id,
+      after: { kind: body.kind, from: body.from, to: body.to, provider: sent.provider },
+    }).catch(() => undefined);
+
+    res.json({ data: { ok: true, messageId: sent.id, provider: sent.provider } });
   }),
 );
 

@@ -498,6 +498,8 @@ model AutoInvestRule {
   label       String
   amountKobo  BigInt
   dayOfMonth  Int
+  /// Weekly | Every 2 weeks | Monthly — additive; older clients may still encode this in label.
+  frequency   String   @default("Monthly")
   active      Boolean  @default(true)
   cardTokenId String?
   createdAt   DateTime @default(now())
