@@ -1,5 +1,4 @@
 import { prisma } from "../lib/prisma.js";
-import { env } from "../lib/env.js";
 import { brandWrap, sendEmail } from "./email.js";
 import { sendPushToUser, type PushKind } from "./push.js";
 
@@ -177,47 +176,8 @@ export async function sendCustomerTxnEmail(input: {
   return sendEmail({ to: input.to, subject: labels.subject, text, html });
 }
 
-export async function sendOpsWithdrawalAlert(input: {
-  customerName: string;
-  customerEmail?: string | null;
-  amountNaira: number;
-  reference: string;
-  withdrawalId: string;
-}) {
-  const recipients = (env.OPS_ALERT_EMAILS || "")
-    .split(",")
-    .map((s) => s.trim())
-    .filter(Boolean);
-  if (!recipients.length) {
-    const ops = await prisma.adminUser.findMany({
-      where: { active: true, role: { in: ["SUPER", "GLOBAL", "OPERATIONS"] } },
-      select: { email: true },
-    });
-    recipients.push(...ops.map((a) => a.email));
-  }
-  if (!recipients.length) return { sent: 0 };
-
-  const amount = `₦${input.amountNaira.toLocaleString("en-NG")}`;
-  const subject = `Withdrawal request · ${amount} · ${input.reference}`;
-  const text = [
-    "New withdrawal request",
-    `Customer: ${input.customerName}${input.customerEmail ? ` (${input.customerEmail})` : ""}`,
-    `Amount: ${amount}`,
-    `Reference: ${input.reference}`,
-    `Id: ${input.withdrawalId}`,
-    "",
-    "Review in the Kipit admin console → Withdrawals.",
-  ].join("\n");
-  const html = brandWrap(
-    "Withdrawal request",
-    `<p><strong>${input.customerName}</strong> requested <strong style="color:#b98113">${amount}</strong>.</p>
-     <p style="color:#64748b;margin:12px 0 0">Reference ${input.reference}</p>
-     <p style="margin:16px 0 0">Open <strong>Withdrawals</strong> in the admin console to complete or decline.</p>`,
-  );
-
-  await Promise.all(recipients.map((to) => sendEmail({ to, subject, text, html })));
-  return { sent: recipients.length };
-}
+/** Admin withdrawal alert — implemented in admin-alerts (respects Profile alert prefs). */
+export { sendOpsWithdrawalAlert } from "./admin-alerts.js";
 
 /** In-app + optional email (respects NotificationPref). */
 /**

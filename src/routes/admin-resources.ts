@@ -1367,6 +1367,16 @@ adminResourcesRouter.post(
     };
     alerts.unshift(row);
     await setConfigJson("admin.aml.alerts", alerts, req.adminId);
+    const { sendAmlEscalationAlert } = await import("../services/admin-alerts.js");
+    await sendAmlEscalationAlert({
+      alertId: row.id,
+      customerName: row.customerName,
+      rule: row.rule,
+      severity: row.severity,
+      status: row.status,
+      assignee: row.assignee,
+      amount: row.amount,
+    }).catch((err) => console.warn("[aml] create alert email failed", err));
     res.status(201).json({ data: row });
   }),
 );
@@ -1405,6 +1415,21 @@ adminResourcesRouter.patch(
       entityId: row.id,
       after: body,
     });
+    const shouldNotify =
+      body.status === "escalated" ||
+      (body.assignee !== undefined && Boolean(body.assignee?.trim()));
+    if (shouldNotify) {
+      const { sendAmlEscalationAlert } = await import("../services/admin-alerts.js");
+      await sendAmlEscalationAlert({
+        alertId: row.id,
+        customerName: row.customerName,
+        rule: row.rule,
+        severity: row.severity,
+        status: row.status,
+        assignee: row.assignee,
+        amount: row.amount,
+      }).catch((err) => console.warn("[aml] escalate alert email failed", err));
+    }
     res.json({ data: row });
   }),
 );
