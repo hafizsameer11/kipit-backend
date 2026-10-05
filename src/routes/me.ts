@@ -7,6 +7,7 @@ import { publicUser } from "../services/auth.js";
 import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { koboToNaira } from "../lib/crypto.js";
 import { recordFeedImpressions } from "../services/feed-impressions.js";
+import { callInterestThisWeek } from "../lib/call-interest-week.js";
 
 export const meRouter = Router();
 
@@ -35,6 +36,8 @@ meRouter.get(
       feed.map((card) => card.id),
     ).catch(() => undefined);
 
+    const interestWeek = await callInterestThisWeek(call.id);
+
     res.json({
       data: {
         greetingName: user.firstName,
@@ -57,22 +60,9 @@ meRouter.get(
           balance: koboToNaira(total),
           balanceKobo: total.toString(),
         },
-        interestThisWeek: await (async () => {
-          const weekAgo = new Date();
-          weekAgo.setDate(weekAgo.getDate() - 7);
-          const callAcct = await ensureUserCall(user.id);
-          const interestLines = await prisma.journalLine.findMany({
-            where: {
-              accountId: callAcct.id,
-              amountKobo: { gt: 0 },
-              createdAt: { gte: weekAgo },
-              entry: { kind: "INTEREST" },
-            },
-            select: { amountKobo: true },
-          });
-          const sum = interestLines.reduce((s, l) => s + l.amountKobo, 0n);
-          return koboToNaira(sum);
-        })(),
+        interestThisWeek: interestWeek.interestThisWeek,
+        interestToday: interestWeek.interestToday,
+        interestWeekSeries: interestWeek.interestWeekSeries,
         nextMaturity: next?.maturityDate
           ? {
               id: next.id,
