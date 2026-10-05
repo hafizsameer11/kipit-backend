@@ -73,3 +73,19 @@ export function requireRoles(...roles: AdminRoleName[]) {
     next();
   };
 }
+
+/** Require at least one of the listed permission ids (from role defaults + AppConfig overrides). */
+export function requirePermission(...permissions: string[]) {
+  return async (req: AdminRequest, _res: Response, next: NextFunction) => {
+    try {
+      if (!req.adminId) {
+        throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
+      }
+      const { assertAdminPermission } = await import("../services/admin-permissions.js");
+      await assertAdminPermission(req.adminRole, ...permissions);
+      next();
+    } catch (err) {
+      next(err);
+    }
+  };
+}
