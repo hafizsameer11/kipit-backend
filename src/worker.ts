@@ -2,6 +2,7 @@ import { runMaturityEngine } from "./jobs/maturity.js";
 import { runKycVerificationJob } from "./jobs/kyc-verify.js";
 import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import { runMarketingDigestJob } from "./jobs/marketing-digest.js";
+import { runAutoInvestJob } from "./jobs/auto-invest.js";
 import { prisma } from "./lib/prisma.js";
 import { connectRedis } from "./lib/redis.js";
 import { getConfigJson } from "./services/admin-ops-store.js";
@@ -10,6 +11,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const KYC_INTERVAL_MS = 60_000;
 const MONNIFY_VA_INTERVAL_MS = 60_000;
 const DIGEST_CHECK_MS = 60_000;
+const AUTO_INVEST_INTERVAL_MS = 60_000;
 
 function msUntilMidnight() {
   const now = new Date();
@@ -98,6 +100,17 @@ async function tickMonnifyVa() {
   }
 }
 
+async function tickAutoInvest() {
+  try {
+    const result = await runAutoInvestJob();
+    if (result.due || result.ran || result.skipped || result.errors) {
+      console.log("[worker] auto-invest", result);
+    }
+  } catch (err) {
+    console.error("[worker] auto-invest failed", err);
+  }
+}
+
 async function main() {
   await prisma.$connect();
   try {
@@ -107,7 +120,7 @@ async function main() {
   }
 
   console.log(
-    "kipit-worker started — maturity @00:00, digest @configured time, kyc-verify + monnify-va every 60s",
+    "kipit-worker started — maturity @00:00, digest @configured time, kyc-verify + monnify-va + auto-invest every 60s",
   );
 
   setTimeout(() => {
@@ -120,6 +133,9 @@ async function main() {
 
   void tickMonnifyVa();
   setInterval(() => void tickMonnifyVa(), MONNIFY_VA_INTERVAL_MS);
+
+  void tickAutoInvest();
+  setInterval(() => void tickAutoInvest(), AUTO_INVEST_INTERVAL_MS);
 
   void tickDigest();
   setInterval(() => void tickDigest(), DIGEST_CHECK_MS);

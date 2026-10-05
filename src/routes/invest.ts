@@ -19,6 +19,15 @@ import {
 import { debitWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { rejectIfMaintenance } from "../middleware/maintenance.js";
+import {
+  AUTO_INVEST_FREQUENCIES,
+  formatNextRun,
+  isAutoInvestFrequency,
+  nextAutoInvestRunAt,
+  resolveFrequency,
+  stripFrequencyPrefix,
+  type AutoInvestFrequency,
+} from "../lib/auto-invest.js";
 
 export const investRouter = Router();
 investRouter.use(rejectIfMaintenance);
@@ -41,40 +50,6 @@ const BAND_MINIMUM_NAIRA: Record<string, number> = {
   "181-364": 100_000,
   "365+": 250_000,
 };
-
-const AUTO_INVEST_FREQUENCIES = ["Weekly", "Every 2 weeks", "Monthly"] as const;
-type AutoInvestFrequency = (typeof AUTO_INVEST_FREQUENCIES)[number];
-
-function parseFrequencyFromLabel(label: string): AutoInvestFrequency | null {
-  const freqMatch = label.match(/^(Weekly|Every 2 weeks|Monthly)\s*·\s*(.*)$/);
-  return freqMatch ? (freqMatch[1] as AutoInvestFrequency) : null;
-}
-
-function stripFrequencyPrefix(label: string): string {
-  const freqMatch = label.match(/^(Weekly|Every 2 weeks|Monthly)\s*·\s*(.*)$/);
-  return freqMatch ? freqMatch[2] : label;
-}
-
-/** Next run date (YYYY-MM-DD) from frequency + dayOfMonth — additive field for clients. */
-function nextAutoInvestRunDate(frequency: AutoInvestFrequency, dayOfMonth: number): string {
-  const now = new Date();
-  const day = Math.min(Math.max(dayOfMonth, 1), 28);
-  if (frequency === "Weekly") {
-    const d = new Date(now);
-    d.setDate(d.getDate() + 7);
-    return d.toISOString().slice(0, 10);
-  }
-  if (frequency === "Every 2 weeks") {
-    const d = new Date(now);
-    d.setDate(d.getDate() + 14);
-    return d.toISOString().slice(0, 10);
-  }
-  const candidate = new Date(now.getFullYear(), now.getMonth(), day);
-  if (candidate.getTime() <= now.getTime()) {
-    candidate.setMonth(candidate.getMonth() + 1);
-  }
-  return candidate.toISOString().slice(0, 10);
-}
 
 const BAND_PRODUCT_NAMES: Record<string, string> = {
   CALL: "Kipit Call Account",
@@ -363,10 +338,7 @@ investRouter.get(
     const rules = await prisma.autoInvestRule.findMany({ where: { userId: req.userId! } });
     res.json({
       data: rules.map((r) => {
-        const fromLabel = parseFrequencyFromLabel(r.label);
-        const frequency = (AUTO_INVEST_FREQUENCIES.includes(r.frequency as AutoInvestFrequency)
-          ? r.frequency
-          : fromLabel ?? "Monthly") as AutoInvestFrequency;
+        const frequency = resolveFrequency(r.frequency, r.label);
         return {
           id: r.id,
           label: stripFrequencyPrefix(r.label),
@@ -374,7 +346,9 @@ investRouter.get(
           dayOfMonth: r.dayOfMonth,
           active: r.active,
           frequency,
-          nextRun: r.active ? nextAutoInvestRunDate(frequency, r.dayOfMonth) : null,
+          nextRun: r.active
+            ? formatNextRun(frequency, r.nextRunAt ?? nextAutoInvestRunAt(frequency, r.dayOfMonth))
+            : null,
         };
       }),
     });
@@ -391,12 +365,15 @@ investRouter.post(
         label: z.string().min(1),
         amount: z.number().positive(),
         dayOfMonth: z.number().int().min(1).max(28),
-        frequency: z.enum(["Weekly", "Every 2 weeks", "Monthly"]).optional(),
+        frequency: z.enum(AUTO_INVEST_FREQUENCIES).optional(),
       })
       .parse(req.body);
-    const frequency = body.frequency ?? "Monthly";
+    const frequency = (body.frequency && isAutoInvestFrequency(body.frequency)
+      ? body.frequency
+      : "Monthly") as AutoInvestFrequency;
     // Keep label prefix so older app builds that only parse the label still work.
     const label = `${frequency} · ${body.label}`;
+    const nextRunAt = nextAutoInvestRunAt(frequency, body.dayOfMonth);
     const rule = await prisma.autoInvestRule.create({
       data: {
         userId: req.userId!,
@@ -404,13 +381,14 @@ investRouter.post(
         amountKobo: nairaToKobo(body.amount),
         dayOfMonth: body.dayOfMonth,
         frequency,
+        nextRunAt,
       },
     });
     res.status(201).json({
       data: {
         id: rule.id,
         frequency,
-        nextRun: nextAutoInvestRunDate(frequency, rule.dayOfMonth),
+        nextRun: formatNextRun(frequency, rule.nextRunAt),
       },
     });
   }),
@@ -425,14 +403,18 @@ investRouter.patch(
       where: { id: String(req.params.id), userId: req.userId! },
     });
     if (!existing) throw new AppError(404, "Auto-invest rule not found", "NOT_FOUND");
+    const frequency = resolveFrequency(existing.frequency, existing.label);
+    const data: { active: boolean; nextRunAt?: Date | null } = { active: body.active };
+    if (body.active) {
+      // Resume: schedule next run from now if missing or already past.
+      if (!existing.nextRunAt || existing.nextRunAt.getTime() <= Date.now()) {
+        data.nextRunAt = nextAutoInvestRunAt(frequency, existing.dayOfMonth);
+      }
+    }
     const rule = await prisma.autoInvestRule.update({
       where: { id: existing.id },
-      data: { active: body.active },
+      data,
     });
-    const fromLabel = parseFrequencyFromLabel(rule.label);
-    const frequency = (AUTO_INVEST_FREQUENCIES.includes(rule.frequency as AutoInvestFrequency)
-      ? rule.frequency
-      : fromLabel ?? "Monthly") as AutoInvestFrequency;
     res.json({
       data: {
         id: rule.id,
@@ -441,7 +423,9 @@ investRouter.patch(
         dayOfMonth: rule.dayOfMonth,
         active: rule.active,
         frequency,
-        nextRun: rule.active ? nextAutoInvestRunDate(frequency, rule.dayOfMonth) : null,
+        nextRun: rule.active
+          ? formatNextRun(frequency, rule.nextRunAt ?? nextAutoInvestRunAt(frequency, rule.dayOfMonth))
+          : null,
       },
     });
   }),
