@@ -1949,6 +1949,165 @@ adminResourcesRouter.get(
 );
 
 adminResourcesRouter.get(
+  "/dashboard/interest-trend",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const { interestForPeriod } = await import("../services/money.js");
+    const now = new Date();
+    type MonthBucket = {
+      key: string;
+      month: string;
+      start: Date;
+      end: Date;
+      accruedKobo: bigint;
+      paidKobo: bigint;
+    };
+
+    const months: MonthBucket[] = [];
+    for (let i = 6; i >= 0; i -= 1) {
+      const start = new Date(Date.UTC(now.getUTCFullYear(), now.getUTCMonth() - i, 1));
+      const end = new Date(Date.UTC(start.getUTCFullYear(), start.getUTCMonth() + 1, 0, 23, 59, 59, 999));
+      const key = `${start.getUTCFullYear()}-${String(start.getUTCMonth() + 1).padStart(2, "0")}`;
+      const month = start.toLocaleDateString("en-GB", { month: "short", timeZone: "UTC" });
+      months.push({ key, month, start, end, accruedKobo: 0n, paidKobo: 0n });
+    }
+    const byKey = Object.fromEntries(months.map((m) => [m.key, m]));
+    const rangeStart = months[0]!.start;
+
+    const interestEntries = await prisma.journalEntry.findMany({
+      where: { kind: "INTEREST", createdAt: { gte: rangeStart } },
+      include: { lines: true },
+    });
+    for (const e of interestEntries) {
+      const key = `${e.createdAt.getUTCFullYear()}-${String(e.createdAt.getUTCMonth() + 1).padStart(2, "0")}`;
+      const bucket = byKey[key];
+      if (!bucket) continue;
+      const abs = e.lines.reduce((s, l) => {
+        const a = l.amountKobo < 0n ? -l.amountKobo : l.amountKobo;
+        return a > s ? a : s;
+      }, 0n);
+      bucket.paidKobo += abs;
+      bucket.accruedKobo += abs;
+    }
+
+    const matured = await prisma.placement.findMany({
+      where: {
+        status: "MATURED",
+        OR: [
+          { maturityDate: { gte: rangeStart } },
+          { updatedAt: { gte: rangeStart }, maturityDate: null },
+        ],
+      },
+      select: { accruedKobo: true, maturityDate: true, updatedAt: true },
+    });
+    for (const p of matured) {
+      const when = p.maturityDate ?? p.updatedAt;
+      const key = `${when.getUTCFullYear()}-${String(when.getUTCMonth() + 1).padStart(2, "0")}`;
+      const bucket = byKey[key];
+      if (!bucket || p.accruedKobo <= 0n) continue;
+      bucket.paidKobo += p.accruedKobo;
+      bucket.accruedKobo += p.accruedKobo;
+    }
+
+    const activeFixed = await prisma.placement.findMany({
+      where: { status: "ACTIVE", kind: { in: ["FIXED", "EXPLORE"] } },
+      select: {
+        principalKobo: true,
+        rateBps: true,
+        startDate: true,
+        maturityDate: true,
+      },
+    });
+    const dayMs = 24 * 60 * 60 * 1000;
+    for (const m of months) {
+      const monthCap = m.end.getTime() < now.getTime() ? m.end : now;
+      for (const p of activeFixed) {
+        const from = p.startDate.getTime() > m.start.getTime() ? p.startDate : m.start;
+        const hardEnd = p.maturityDate && p.maturityDate.getTime() < monthCap.getTime() ? p.maturityDate : monthCap;
+        if (hardEnd.getTime() <= from.getTime()) continue;
+        const days = Math.max(0, Math.floor((hardEnd.getTime() - from.getTime()) / dayMs));
+        if (days <= 0) continue;
+        m.accruedKobo += interestForPeriod(p.principalKobo, p.rateBps, days);
+      }
+    }
+
+    res.json({
+      data: months.map((m) => ({
+        month: m.month,
+        accrued: koboToNaira(m.accruedKobo) / 1_000_000,
+        paid: koboToNaira(m.paidKobo) / 1_000_000,
+        accruedNaira: koboToNaira(m.accruedKobo),
+        paidNaira: koboToNaira(m.paidKobo),
+      })),
+    });
+  }),
+);
+
+adminResourcesRouter.get(
+  "/dashboard/maturity-schedule",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const now = new Date();
+    now.setHours(0, 0, 0, 0);
+    // Align to Monday of the current week (local).
+    const day = now.getDay();
+    const mondayOffset = day === 0 ? -6 : 1 - day;
+    const week0 = new Date(now);
+    week0.setDate(now.getDate() + mondayOffset);
+    week0.setHours(0, 0, 0, 0);
+
+    const horizonEnd = new Date(week0);
+    horizonEnd.setDate(week0.getDate() + 7 * 6 - 1);
+    horizonEnd.setHours(23, 59, 59, 999);
+
+    const rows = await prisma.placement.findMany({
+      where: {
+        status: "ACTIVE",
+        maturityDate: { gte: week0, lte: horizonEnd },
+      },
+      select: {
+        principalKobo: true,
+        rateBps: true,
+        tenorDays: true,
+        maturityDate: true,
+      },
+    });
+
+    type WeekBucket = { week: string; valueKobo: bigint; start: Date; end: Date };
+    const buckets: WeekBucket[] = [];
+    for (let i = 0; i < 6; i += 1) {
+      const start = new Date(week0);
+      start.setDate(week0.getDate() + i * 7);
+      const end = new Date(start);
+      end.setDate(start.getDate() + 6);
+      end.setHours(23, 59, 59, 999);
+      buckets.push({ week: `W${i + 1}`, valueKobo: 0n, start, end });
+    }
+
+    for (const p of rows) {
+      if (!p.maturityDate) continue;
+      const interest =
+        (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 10000n;
+      const expected = p.principalKobo + interest;
+      const bucket = buckets.find(
+        (b) => p.maturityDate! >= b.start && p.maturityDate! <= b.end,
+      );
+      if (bucket) bucket.valueKobo += expected;
+    }
+
+    res.json({
+      data: buckets.map((b) => ({
+        week: b.week,
+        value: koboToNaira(b.valueKobo) / 1_000_000,
+        valueNaira: koboToNaira(b.valueKobo),
+        from: b.start.toISOString().slice(0, 10),
+        to: b.end.toISOString().slice(0, 10),
+      })),
+    });
+  }),
+);
+
+adminResourcesRouter.get(
   "/dashboard/principal-by-tenor",
   requireAdmin,
   asyncHandler(async (_req, res) => {
