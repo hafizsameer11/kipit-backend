@@ -161,16 +161,26 @@ export type AdminRateBandView = {
   previousBps: number | null;
   scheduledBps: number | null;
   scheduledFrom: string | null;
-  status: "active" | "scheduled";
+  pendingBps: number | null;
+  pendingFrom: string | null;
+  status: "active" | "scheduled" | "pending";
 };
 
-/** Enrich a live band with previous / scheduled display fields. */
+/** Enrich a live band with previous / scheduled / pending display fields. */
 export async function rateBandAdminExtras(
   bandId: string,
   rateBps: number,
   now = new Date(),
 ): Promise<AdminRateBandView> {
   const today = utcDay(now);
+
+  const pending = await prisma.rateChangeRequest.findFirst({
+    where: {
+      bandId,
+      status: "PENDING",
+    },
+    orderBy: { createdAt: "desc" },
+  });
 
   const scheduled = await prisma.rateChangeRequest.findFirst({
     where: {
@@ -206,10 +216,18 @@ export async function rateBandAdminExtras(
     previousBps = prior?.proposedBps ?? null;
   }
 
+  const status: AdminRateBandView["status"] = pending
+    ? "pending"
+    : scheduled
+      ? "scheduled"
+      : "active";
+
   return {
     previousBps: previousBps ?? rateBps,
     scheduledBps: scheduled?.proposedBps ?? null,
     scheduledFrom: scheduled?.effectiveFrom.toISOString().slice(0, 10) ?? null,
-    status: scheduled ? "scheduled" : "active",
+    pendingBps: pending?.proposedBps ?? null,
+    pendingFrom: pending?.effectiveFrom.toISOString().slice(0, 10) ?? null,
+    status,
   };
 }

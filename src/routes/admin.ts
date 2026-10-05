@@ -1285,6 +1285,8 @@ adminRouter.get(
           previousBps: extras.previousBps,
           scheduledBps: extras.scheduledBps,
           scheduledFrom: extras.scheduledFrom,
+          pendingBps: extras.pendingBps,
+          pendingFrom: extras.pendingFrom,
           status: extras.status,
           placements: matching.length,
           principal: koboToNaira(principalKobo),
