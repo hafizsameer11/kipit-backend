@@ -78,7 +78,7 @@ export type StoredAdjustment = {
   placementId: string;
   customerName: string;
   product: string;
-  type: "principal" | "rate" | "tenor" | "maturity";
+  type: "principal" | "rate" | "tenor" | "maturity" | "payout" | "status";
   fromValue: string;
   toValue: string;
   reason: string;

@@ -1593,7 +1593,14 @@ adminResourcesRouter.get(
           userName: r.customerName,
           product: r.product,
           reference: r.placementId,
-          type: r.type === "maturity" ? "maturity-date" : r.type,
+          type:
+            r.type === "maturity"
+              ? "maturity-date"
+              : r.type === "payout"
+                ? "payout-frequency"
+                : r.type === "status"
+                  ? "status"
+                  : r.type,
           previous: r.fromValue,
           proposed: r.toValue,
           reason: r.reason,
@@ -1632,7 +1639,7 @@ adminResourcesRouter.post(
     const body = z
       .object({
         placementId: z.string().min(1),
-        type: z.enum(["principal", "rate", "tenor", "maturity"]),
+        type: z.enum(["principal", "rate", "tenor", "maturity", "payout", "status"]),
         toValue: z.string().min(1),
         reason: z.string().min(4),
       })
@@ -1642,14 +1649,63 @@ adminResourcesRouter.post(
       include: { user: true },
     });
     if (!placement) throw new AppError(404, "Placement not found", "NOT_FOUND");
+
+    const toValue = body.toValue.trim();
+    if (body.type === "maturity") {
+      if (!/^\d{4}-\d{2}-\d{2}$/.test(toValue)) {
+        throw new AppError(400, "Maturity date must be YYYY-MM-DD", "INVALID_VALUE");
+      }
+      const parsed = new Date(`${toValue}T00:00:00.000Z`);
+      if (Number.isNaN(parsed.getTime()) || parsed.toISOString().slice(0, 10) !== toValue) {
+        throw new AppError(400, "Maturity date must be a valid calendar day", "INVALID_VALUE");
+      }
+    } else if (body.type === "rate") {
+      const n = Number(toValue.replace(/%/g, "").trim());
+      if (!Number.isFinite(n) || n <= 0 || n > 100) {
+        throw new AppError(400, "Rate must be a percentage between 0.01 and 100", "INVALID_VALUE");
+      }
+    } else if (body.type === "tenor") {
+      const n = Number(toValue.replace(/days/gi, "").trim());
+      if (!Number.isInteger(n) || n < 1) {
+        throw new AppError(400, "Tenor must be a whole number of days", "INVALID_VALUE");
+      }
+    } else if (body.type === "principal") {
+      const n = Number(toValue.replace(/[₦,\s]/g, ""));
+      if (!Number.isFinite(n) || n < 1000) {
+        throw new AppError(400, "Principal must be at least ₦1,000", "INVALID_VALUE");
+      }
+    } else if (body.type === "payout") {
+      if (!["WALLET", "ROLLOVER", "PAYOUT", "At maturity"].includes(toValue)) {
+        throw new AppError(400, "Invalid payout instruction", "INVALID_VALUE");
+      }
+    } else if (body.type === "status") {
+      if (!["ACTIVE", "MATURED", "CLOSED"].includes(toValue)) {
+        throw new AppError(400, "Invalid plan status", "INVALID_VALUE");
+      }
+    }
+
     const fromValue =
       body.type === "principal"
         ? String(koboToNaira(placement.principalKobo))
         : body.type === "rate"
-          ? String(placement.rateBps / 100)
+          ? `${(placement.rateBps / 100).toFixed(2)}%`
           : body.type === "tenor"
-            ? String(placement.tenorDays ?? "")
-            : placement.maturityDate?.toISOString().slice(0, 10) ?? "";
+            ? `${placement.tenorDays ?? 0} days`
+            : body.type === "maturity"
+              ? placement.maturityDate?.toISOString().slice(0, 10) ?? ""
+              : body.type === "payout"
+                ? placement.maturityInstruction
+                : placement.status;
+
+    const normalizedTo =
+      body.type === "rate"
+        ? String(Number(toValue.replace(/%/g, "").trim()))
+        : body.type === "tenor"
+          ? String(Number(toValue.replace(/days/gi, "").trim()))
+          : body.type === "principal"
+            ? String(Number(toValue.replace(/[₦,\s]/g, "")))
+            : toValue;
+
     const requests = await getConfigJson<StoredAdjustment[]>("admin.adjustments", []);
     const row: StoredAdjustment = {
       id: `adj_${nanoid(10)}`,
@@ -1658,7 +1714,7 @@ adminResourcesRouter.post(
       product: placement.name,
       type: body.type,
       fromValue,
-      toValue: body.toValue,
+      toValue: normalizedTo,
       reason: body.reason,
       status: "pending",
       maker: req.adminName || "Admin",
@@ -1701,11 +1757,40 @@ adminResourcesRouter.post(
         rateBps?: number;
         tenorDays?: number;
         maturityDate?: Date;
+        maturityInstruction?: "WALLET" | "ROLLOVER" | "PAYOUT";
+        status?: "ACTIVE" | "MATURED" | "CLOSED";
       } = {};
-      if (row.type === "principal") data.principalKobo = nairaToKobo(Number(row.toValue));
-      if (row.type === "rate") data.rateBps = Math.round(Number(row.toValue) * 100);
-      if (row.type === "tenor") data.tenorDays = Number(row.toValue);
-      if (row.type === "maturity") data.maturityDate = new Date(row.toValue);
+      if (row.type === "principal") {
+        data.principalKobo = nairaToKobo(Number(String(row.toValue).replace(/[₦,\s]/g, "")));
+      }
+      if (row.type === "rate") {
+        data.rateBps = Math.round(Number(String(row.toValue).replace(/%/g, "").trim()) * 100);
+      }
+      if (row.type === "tenor") {
+        data.tenorDays = Number(String(row.toValue).replace(/days/gi, "").trim());
+      }
+      if (row.type === "maturity") {
+        if (!/^\d{4}-\d{2}-\d{2}$/.test(row.toValue)) {
+          throw new AppError(400, "Maturity date must be YYYY-MM-DD", "INVALID_VALUE");
+        }
+        data.maturityDate = new Date(`${row.toValue}T00:00:00.000Z`);
+      }
+      if (row.type === "payout") {
+        const mapped =
+          row.toValue === "At maturity"
+            ? "WALLET"
+            : row.toValue === "WALLET" || row.toValue === "ROLLOVER" || row.toValue === "PAYOUT"
+              ? row.toValue
+              : null;
+        if (!mapped) throw new AppError(400, "Invalid payout instruction", "INVALID_VALUE");
+        data.maturityInstruction = mapped;
+      }
+      if (row.type === "status") {
+        if (row.toValue !== "ACTIVE" && row.toValue !== "MATURED" && row.toValue !== "CLOSED") {
+          throw new AppError(400, "Invalid plan status", "INVALID_VALUE");
+        }
+        data.status = row.toValue;
+      }
       await prisma.placement.update({ where: { id: row.placementId }, data });
     }
 
