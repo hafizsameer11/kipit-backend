@@ -1618,12 +1618,12 @@ adminResourcesRouter.post(
       entityId: row.id,
     });
 
-    // Due scheduled / send-now creates: deliver immediately.
+    // Due scheduled / send-now creates: deliver immediately (push or email).
     const dueNow =
       body.status === "sending" ||
       (body.status === "scheduled" &&
         (!body.scheduledAt || new Date(body.scheduledAt).getTime() <= Date.now() + 5_000));
-    if (dueNow && body.channel === "push") {
+    if (dueNow) {
       const { sendMarketingCampaign } = await import("../jobs/marketing-campaigns.js");
       const result = await sendMarketingCampaign(row.id);
       res.status(201).json({ data: { ...row, ...result, status: result.status } });
