@@ -24,6 +24,11 @@ import {
   type StoredCampaign,
   type StoredReconRecord,
 } from "../services/admin-ops-store.js";
+import {
+  classifyChatSessionOutcome,
+  handoffDestinationLabel,
+  isSupportHandoffPath,
+} from "../services/chat-outcome.js";
 import { nanoid } from "nanoid";
 
 type AdminRequest = Request & { adminId?: string; adminRole?: string; adminName?: string };
@@ -1030,35 +1035,39 @@ adminResourcesRouter.get(
       include: {
         user: true,
         _count: { select: { messages: true } },
-        messages: { orderBy: { createdAt: "desc" }, take: 1 },
+        messages: {
+          orderBy: { createdAt: "asc" },
+          select: { role: true, content: true, blocks: true, createdAt: true },
+        },
       },
       orderBy: { createdAt: "desc" },
       take: 200,
     });
-    const firstUserMsgs = await prisma.chatMessage.findMany({
-      where: {
-        role: "user",
-        sessionId: { in: rows.map((s) => s.id) },
-      },
-      orderBy: { createdAt: "asc" },
-      distinct: ["sessionId"],
-      select: { sessionId: true, content: true },
-    });
-    const firstBySession = new Map(firstUserMsgs.map((m) => [m.sessionId, m.content]));
     res.json({
-      data: rows.map((s) => ({
-        id: s.id,
-        user: {
-          id: s.userId,
-          name: `${s.user.firstName} ${s.user.surname}`,
-          email: s.user.email,
-        },
-        createdAt: s.createdAt,
-        messageCount: s._count.messages,
-        firstUserMessage: firstBySession.get(s.id) ?? null,
-        lastMessage: s.messages[0]?.content ?? null,
-        flagged: s.flagged,
-      })),
+      data: rows.map((s) => {
+        const firstUser = s.messages.find((m) => m.role === "user")?.content ?? null;
+        const last = s.messages[s.messages.length - 1]?.content ?? null;
+        const classified = classifyChatSessionOutcome({
+          messageCount: s._count.messages,
+          flagged: s.flagged,
+          messages: s.messages,
+        });
+        return {
+          id: s.id,
+          user: {
+            id: s.userId,
+            name: `${s.user.firstName} ${s.user.surname}`,
+            email: s.user.email,
+          },
+          createdAt: s.createdAt,
+          messageCount: s._count.messages,
+          firstUserMessage: firstUser,
+          lastMessage: last,
+          flagged: s.flagged || classified.outcome === "escalated",
+          outcome: classified.outcome,
+          handoffTo: classified.handoffTo,
+        };
+      }),
     });
   }),
 );
@@ -1099,7 +1108,10 @@ adminResourcesRouter.get(
     const sessions = await prisma.chatSession.findMany({
       where: { createdAt: { gte: start30 } },
       include: {
-        messages: { orderBy: { createdAt: "asc" }, select: { role: true, content: true, createdAt: true } },
+        messages: {
+          orderBy: { createdAt: "asc" },
+          select: { role: true, content: true, blocks: true, createdAt: true },
+        },
         user: { select: { id: true } },
       },
       orderBy: { createdAt: "asc" },
@@ -1114,14 +1126,6 @@ adminResourcesRouter.get(
       if (/withdraw|transaction|transfer|status|where is/.test(t)) return "transaction";
       if (/add money|fund|deposit|virtual account|card/.test(t)) return "funding";
       return "unsupported";
-    };
-
-    const classifyOutcome = (msgs: { role: string; content: string }[]): string => {
-      if (msgs.length <= 2) return "abandoned";
-      const joined = msgs.map((m) => m.content).join(" ").toLowerCase();
-      if (/ticket|escalat|unacceptable|support/.test(joined)) return "escalated";
-      if (/set it up|open|continue|invest for me|handoff|secure/.test(joined)) return "handoff";
-      return "resolved";
     };
 
     const intentCounts: Record<string, number> = {};
@@ -1140,19 +1144,19 @@ adminResourcesRouter.get(
       const firstUser = s.messages.find((m) => m.role === "user")?.content ?? "";
       const intent = classifyIntent(firstUser);
       intentCounts[intent] = (intentCounts[intent] ?? 0) + 1;
-      const outcome = classifyOutcome(s.messages);
+      const classified = classifyChatSessionOutcome({
+        messageCount: s.messages.length,
+        flagged: s.flagged,
+        messages: s.messages,
+      });
+      const outcome = classified.outcome;
       if (s.flagged || outcome === "escalated") flagged += 1;
       if (outcome === "handoff") {
-        const label =
-          /fixed|90|plan/.test(firstUser.toLowerCase())
-            ? "Fixed plan setup"
-            : /fund|add money|deposit/.test(firstUser.toLowerCase())
-              ? "Add money / funding"
-              : /explore|product/.test(firstUser.toLowerCase())
-                ? "Explore product detail"
-                : /withdraw/.test(firstUser.toLowerCase())
-                  ? "Withdrawal request"
-                  : "Secure journey";
+        const journey =
+          classified.handoffs.find((h) => !isSupportHandoffPath(h.to)) ?? classified.handoffs[0];
+        const label = journey
+          ? handoffDestinationLabel(journey.to, journey.label)
+          : classified.handoffTo || "Secure journey";
         handoffCounts.set(label, (handoffCounts.get(label) ?? 0) + 1);
       }
       if (firstUser.trim()) {
@@ -1180,8 +1184,22 @@ adminResourcesRouter.get(
     }
 
     const sessionsToday = sessions.filter((s) => s.createdAt >= startToday).length;
-    const resolved = sessions.filter((s) => classifyOutcome(s.messages) === "resolved").length;
-    const handoffs = sessions.filter((s) => classifyOutcome(s.messages) === "handoff").length;
+    const resolved = sessions.filter(
+      (s) =>
+        classifyChatSessionOutcome({
+          messageCount: s.messages.length,
+          flagged: s.flagged,
+          messages: s.messages,
+        }).outcome === "resolved",
+    ).length;
+    const handoffs = sessions.filter(
+      (s) =>
+        classifyChatSessionOutcome({
+          messageCount: s.messages.length,
+          flagged: s.flagged,
+          messages: s.messages,
+        }).outcome === "handoff",
+    ).length;
     const containmentPct = sessions.length
       ? Math.round((resolved / sessions.length) * 100)
       : 0;
@@ -1255,12 +1273,19 @@ adminResourcesRouter.get(
       },
     });
     if (!s) throw new AppError(404, "Session not found", "NOT_FOUND");
+    const classified = classifyChatSessionOutcome({
+      messageCount: s.messages.length,
+      flagged: s.flagged,
+      messages: s.messages,
+    });
     res.json({
       data: {
         id: s.id,
         user: { id: s.userId, name: `${s.user.firstName} ${s.user.surname}`, email: s.user.email },
         createdAt: s.createdAt,
-        flagged: s.flagged,
+        flagged: s.flagged || classified.outcome === "escalated",
+        outcome: classified.outcome,
+        handoffTo: classified.handoffTo,
         messages: s.messages.map((m) => ({
           id: m.id,
           role: m.role,

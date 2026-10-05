@@ -318,6 +318,7 @@ function safeHandoffPath(to: string): string | null {
 
 async function runTool(
   userId: string,
+  sessionId: string,
   name: string,
   argsJson: string,
   blocks: ChatUiBlock[],
@@ -508,6 +509,10 @@ async function runTool(
     const ticket = await prisma.supportTicket.create({
       data: { userId, category, subject, body: detail },
     });
+    await prisma.chatSession.update({
+      where: { id: sessionId },
+      data: { flagged: true },
+    }).catch(() => undefined);
     const { createUserNotification } = await import("./notify.js");
     await createUserNotification({
       userId,
@@ -771,7 +776,13 @@ async function buildLlmReply(userId: string, sessionId: string, userText: string
       });
 
       for (const call of assistant.tool_calls) {
-        const result = await runTool(userId, call.function.name, call.function.arguments || "{}", blocks);
+        const result = await runTool(
+          userId,
+          sessionId,
+          call.function.name,
+          call.function.arguments || "{}",
+          blocks,
+        );
         messages.push({
           role: "tool",
           tool_call_id: call.id,
