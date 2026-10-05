@@ -237,6 +237,22 @@ const DEFAULT_DIGEST = {
   openRate: 0,
 };
 
+const DEFAULT_REFERRAL_PROGRAMME = {
+  enabled: true,
+  requiresKyc: true,
+  rules: {
+    "rr-inviter": "5000",
+    "rr-invitee": "2500",
+    "rr-min": "50000",
+    "rr-hold": "30",
+    "rr-expiry": "30",
+    "rr-cap": "10",
+  } as Record<string, string>,
+  changeLog: [] as { at: string; by: string; change: string; status: string }[],
+  updatedAt: null as string | null,
+  updatedBy: null as string | null,
+};
+
 export const adminConsoleRouter = Router();
 adminConsoleRouter.use(requireAdmin);
 
@@ -504,6 +520,106 @@ adminConsoleRouter.put(
       action: "digest.updated",
       entityType: "AppConfig",
       entityId: "marketing.digest",
+      after: next,
+    });
+    res.json({ data: next });
+  }),
+);
+
+adminConsoleRouter.get(
+  "/marketing/referrals",
+  asyncHandler(async (_req, res) => {
+    const programme = await getConfig("marketing.referral", DEFAULT_REFERRAL_PROGRAMME);
+    res.json({
+      data: {
+        ...DEFAULT_REFERRAL_PROGRAMME,
+        ...programme,
+        rules: {
+          ...DEFAULT_REFERRAL_PROGRAMME.rules,
+          ...(programme.rules ?? {}),
+        },
+        changeLog: programme.changeLog ?? [],
+      },
+    });
+  }),
+);
+
+adminConsoleRouter.put(
+  "/marketing/referrals",
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        enabled: z.boolean(),
+        requiresKyc: z.boolean(),
+        rules: z.object({
+          "rr-inviter": z.string().regex(/^\d+$/),
+          "rr-invitee": z.string().regex(/^\d+$/),
+          "rr-min": z.string().regex(/^\d+$/),
+          "rr-hold": z.string().regex(/^\d+$/),
+          "rr-expiry": z.string().regex(/^\d+$/),
+          "rr-cap": z.string().regex(/^\d+$/),
+        }),
+      })
+      .parse(req.body);
+
+    const asInt = (v: string, label: string, min: number, max: number) => {
+      const n = Number(v);
+      if (!Number.isInteger(n) || n < min || n > max) {
+        throw new AppError(400, `${label} must be between ${min} and ${max}`, "INVALID_VALUE");
+      }
+      return n;
+    };
+    asInt(body.rules["rr-inviter"], "Inviter reward", 0, 1_000_000);
+    asInt(body.rules["rr-invitee"], "Invitee reward", 0, 1_000_000);
+    asInt(body.rules["rr-min"], "Qualifying funding", 0, 100_000_000);
+    asInt(body.rules["rr-hold"], "Hold period", 0, 3650);
+    asInt(body.rules["rr-expiry"], "Invite expiry", 1, 3650);
+    asInt(body.rules["rr-cap"], "Monthly cap", 1, 1000);
+
+    const current = await getConfig("marketing.referral", DEFAULT_REFERRAL_PROGRAMME);
+    const prevRules = {
+      ...DEFAULT_REFERRAL_PROGRAMME.rules,
+      ...(current.rules ?? {}),
+    };
+    const changes: string[] = [];
+    if (Boolean(current.enabled) !== body.enabled) {
+      changes.push(`Programme ${body.enabled ? "enabled" : "disabled"}`);
+    }
+    if (Boolean(current.requiresKyc) !== body.requiresKyc) {
+      changes.push(`Require KYC ${body.requiresKyc ? "on" : "off"}`);
+    }
+    for (const [id, nextVal] of Object.entries(body.rules)) {
+      if (String(prevRules[id] ?? "") !== nextVal) {
+        changes.push(`${id}: ${prevRules[id] ?? "—"} → ${nextVal}`);
+      }
+    }
+
+    const nowIso = new Date().toISOString();
+    const actor =
+      (await prisma.adminUser.findUnique({ where: { id: req.adminId! }, select: { name: true } }))
+        ?.name || "Admin";
+    const entry = {
+      at: nowIso,
+      by: actor,
+      change: changes.length ? changes.join("; ") : "No field changes",
+      status: "saved",
+    };
+    const next = {
+      ...DEFAULT_REFERRAL_PROGRAMME,
+      ...current,
+      enabled: body.enabled,
+      requiresKyc: body.requiresKyc,
+      rules: body.rules,
+      updatedAt: nowIso,
+      updatedBy: actor,
+      changeLog: [entry, ...(current.changeLog ?? [])].slice(0, 50),
+    };
+    await setConfig("marketing.referral", next, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "referral.rules.updated",
+      entityType: "AppConfig",
+      entityId: "marketing.referral",
       after: next,
     });
     res.json({ data: next });
