@@ -416,6 +416,7 @@ adminResourcesRouter.get(
         subject: t.subject,
         body: t.body,
         status: t.status,
+        priority: t.priority || "normal",
         attachmentUrl: t.attachmentUrl,
         attachmentName: t.attachmentName,
         assigneeAdminId: t.assigneeAdminId,
@@ -475,6 +476,7 @@ adminResourcesRouter.get(
         subject: row.subject,
         body: row.body,
         status: row.status,
+        priority: row.priority || "normal",
         attachmentUrl: row.attachmentUrl,
         attachmentName: row.attachmentName,
         assigneeAdminId: row.assigneeAdminId,
@@ -540,6 +542,7 @@ adminResourcesRouter.patch(
     const body = z
       .object({
         status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]).optional(),
+        priority: z.enum(["urgent", "high", "normal", "low"]).optional(),
         adminNote: z.string().optional(),
         reply: z.string().min(1).max(4000).optional(),
         attachmentUrl: z.string().min(8).max(500).optional(),
@@ -597,6 +600,7 @@ adminResourcesRouter.patch(
       where: { id: existing.id },
       data: {
         status: body.status ?? (replyText ? "IN_PROGRESS" : undefined),
+        ...(body.priority !== undefined ? { priority: body.priority } : {}),
       },
       include: { user: true, messages: { orderBy: { createdAt: "asc" } } },
     });
@@ -605,12 +609,13 @@ adminResourcesRouter.patch(
       action: "support.ticket.updated",
       entityType: "SupportTicket",
       entityId: row.id,
-      after: { status: row.status, replied: Boolean(replyText) },
+      after: { status: row.status, priority: row.priority, replied: Boolean(replyText) },
     });
     res.json({
       data: {
         id: row.id,
         status: row.status,
+        priority: row.priority,
         subject: row.subject,
         body: row.body,
         attachmentUrl: row.attachmentUrl,
