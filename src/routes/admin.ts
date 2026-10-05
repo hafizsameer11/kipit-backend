@@ -1338,6 +1338,18 @@ adminRouter.post(
         makerAdminId: req.adminId!,
       },
     });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "rate.propose",
+      entityType: "RateChangeRequest",
+      entityId: row.id,
+      after: {
+        bandId: body.bandId,
+        proposedBps: body.proposedBps,
+        previousBps: band.rateBps,
+        effectiveFrom: body.effectiveFrom,
+      },
+    });
     res.status(201).json({ data: row });
   }),
 );
@@ -1403,6 +1415,14 @@ adminRouter.post(
         },
       });
     }
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: body.approve ? "rate.approved" : "rate.rejected",
+      entityType: "RateChangeRequest",
+      entityId: row.id,
+      after: { approve: body.approve, bandId: row.bandId, proposedBps: row.proposedBps },
+    });
 
     res.json({ data: { id: row.id, status: body.approve ? "APPROVED" : "REJECTED" } });
   }),
