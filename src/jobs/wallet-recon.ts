@@ -305,6 +305,12 @@ export async function runWalletReconJob() {
   );
 
   const open = trimmed.filter((r) => r.status === "open").length;
+  const { sendReconVarianceAlert } = await import("../services/admin-alerts.js");
+  await sendReconVarianceAlert({
+    openCount: open,
+    exceptions: drafts.length,
+  }).catch((err) => console.warn("[wallet-recon] variance alert failed", err));
+
   return {
     scannedIntents: intents.length,
     scannedWithdrawals: withdrawals.length,

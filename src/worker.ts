@@ -55,6 +55,7 @@ function lagosDateKey(): string {
 }
 
 let lastDigestDateKey = "";
+let lastOpsDigestDateKey = "";
 
 async function tickDigest() {
   try {
@@ -73,6 +74,22 @@ async function tickDigest() {
     console.log("[worker] marketing digest ok", result);
   } catch (err) {
     console.error("[worker] marketing digest failed", err);
+  }
+}
+
+async function tickOpsDigest() {
+  try {
+    const target = "07:00";
+    const nowHm = currentLagosHm();
+    const dateKey = lagosDateKey();
+    if (nowHm !== target || lastOpsDigestDateKey === dateKey) return;
+    lastOpsDigestDateKey = dateKey;
+    console.log("[worker] running ops digest…");
+    const { runOpsDigestJob } = await import("./services/admin-alerts.js");
+    const result = await runOpsDigestJob();
+    console.log("[worker] ops digest ok", result);
+  } catch (err) {
+    console.error("[worker] ops digest failed", err);
   }
 }
 
@@ -172,7 +189,7 @@ async function main() {
   }
 
   console.log(
-    "kipit-worker started — maturity @00:00, digest @configured time, campaigns every 60s, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s, wallet-recon every 15m",
+    "kipit-worker started — maturity @00:00, digest @configured time, ops-digest @07:00 Lagos, campaigns every 60s, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s, wallet-recon every 15m",
   );
 
   setTimeout(() => {
@@ -200,6 +217,9 @@ async function main() {
 
   void tickDigest();
   setInterval(() => void tickDigest(), DIGEST_CHECK_MS);
+
+  void tickOpsDigest();
+  setInterval(() => void tickOpsDigest(), DIGEST_CHECK_MS);
 
   void tickCampaigns();
   setInterval(() => void tickCampaigns(), CAMPAIGN_CHECK_MS);

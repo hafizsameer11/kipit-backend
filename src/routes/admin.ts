@@ -1350,6 +1350,16 @@ adminRouter.post(
         effectiveFrom: body.effectiveFrom,
       },
     });
+    const { sendRateApprovalAlert } = await import("../services/admin-alerts.js");
+    await sendRateApprovalAlert({
+      requestId: row.id,
+      bandName: band.label,
+      proposedBps: body.proposedBps,
+      previousBps: band.rateBps,
+      effectiveFrom: body.effectiveFrom,
+      makerAdminId: req.adminId!,
+      makerName: req.adminName,
+    }).catch((err) => console.warn("[rates] proposal alert email failed", err));
     res.status(201).json({ data: row });
   }),
 );
@@ -2220,7 +2230,9 @@ adminRouter.get(
   asyncHandler(async (req: AdminRequest, res) => {
     const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
     const { permissionsForRole } = await import("../services/admin-permissions.js");
+    const { getAdminAlertPrefs } = await import("../services/admin-alerts.js");
     const permissions = await permissionsForRole(admin.role);
+    const alertPrefs = await getAdminAlertPrefs(admin.id);
     res.json({
       data: {
         id: admin.id,
@@ -2231,6 +2243,7 @@ adminRouter.get(
         require2fa: admin.require2fa,
         makerChecker: admin.makerChecker,
         permissions,
+        alertPrefs,
       },
     });
   }),
@@ -2244,6 +2257,15 @@ adminRouter.patch(
       .object({
         name: z.string().min(2).optional(),
         phone: z.string().max(32).optional(),
+        alertPrefs: z
+          .object({
+            withdrawalApprovals: z.boolean().optional(),
+            amlEscalations: z.boolean().optional(),
+            reconVariances: z.boolean().optional(),
+            rateApprovals: z.boolean().optional(),
+            dailyOpsDigest: z.boolean().optional(),
+          })
+          .optional(),
       })
       .parse(req.body);
     const row = await prisma.adminUser.update({
@@ -2253,8 +2275,23 @@ adminRouter.patch(
         ...(body.phone !== undefined ? { phone: body.phone.replace(/\D/g, "") || null } : {}),
       },
     });
+    let alertPrefs;
+    if (body.alertPrefs) {
+      const { setAdminAlertPrefs } = await import("../services/admin-alerts.js");
+      alertPrefs = await setAdminAlertPrefs(req.adminId!, body.alertPrefs);
+    } else {
+      const { getAdminAlertPrefs } = await import("../services/admin-alerts.js");
+      alertPrefs = await getAdminAlertPrefs(req.adminId!);
+    }
     res.json({
-      data: { id: row.id, name: row.name, phone: row.phone, email: row.email, role: row.role },
+      data: {
+        id: row.id,
+        name: row.name,
+        phone: row.phone,
+        email: row.email,
+        role: row.role,
+        alertPrefs,
+      },
     });
   }),
 );
