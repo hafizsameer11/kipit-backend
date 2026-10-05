@@ -2150,39 +2150,69 @@ adminResourcesRouter.get(
     const byKey = Object.fromEntries(months.map((m) => [m.key, m]));
     const rangeStart = months[0]!.start;
 
+    const interestAccounts = await prisma.ledgerAccount.findMany({
+      where: { type: "SYSTEM_INTEREST" },
+      select: { id: true },
+    });
+    const interestAccountIds = new Set(interestAccounts.map((a) => a.id));
+
+    // Weekly/call interest credits.
     const interestEntries = await prisma.journalEntry.findMany({
-      where: { kind: "INTEREST", createdAt: { gte: rangeStart } },
-      include: { lines: true },
+      where: {
+        kind: "INTEREST",
+        createdAt: { gte: rangeStart },
+      },
+      include: { lines: { select: { accountId: true, amountKobo: true } } },
     });
     for (const e of interestEntries) {
       const key = `${e.createdAt.getUTCFullYear()}-${String(e.createdAt.getUTCMonth() + 1).padStart(2, "0")}`;
       const bucket = byKey[key];
       if (!bucket) continue;
-      const abs = e.lines.reduce((s, l) => {
+      const paid = e.lines.reduce((s, l) => {
         const a = l.amountKobo < 0n ? -l.amountKobo : l.amountKobo;
         return a > s ? a : s;
       }, 0n);
-      bucket.paidKobo += abs;
-      bucket.accruedKobo += abs;
+      if (paid <= 0n) continue;
+      bucket.paidKobo += paid;
+      bucket.accruedKobo += paid;
     }
 
+    // Plan maturity payouts — prefer placement.accruedKobo (set on settle).
     const matured = await prisma.placement.findMany({
       where: {
         status: "MATURED",
-        OR: [
-          { maturityDate: { gte: rangeStart } },
-          { updatedAt: { gte: rangeStart }, maturityDate: null },
-        ],
+        OR: [{ maturityDate: { gte: rangeStart } }, { updatedAt: { gte: rangeStart } }],
       },
-      select: { accruedKobo: true, maturityDate: true, updatedAt: true },
+      select: { id: true, accruedKobo: true, maturityDate: true, updatedAt: true },
     });
+    const maturityJournals = await prisma.journalEntry.findMany({
+      where: {
+        kind: "MATURITY",
+        createdAt: { gte: rangeStart },
+      },
+      include: { lines: { select: { accountId: true, amountKobo: true } } },
+    });
+    const interestByPlacementId = new Map<string, bigint>();
+    for (const j of maturityJournals) {
+      const key = j.idempotencyKey || "";
+      const id = key.replace(/^early-maturity-/, "").replace(/^maturity-/, "");
+      if (!id || id === key) continue;
+      const interest = j.lines.reduce((s, l) => {
+        if (!interestAccountIds.has(l.accountId)) return s;
+        const a = l.amountKobo < 0n ? -l.amountKobo : l.amountKobo;
+        return s + a;
+      }, 0n);
+      if (interest > 0n) interestByPlacementId.set(id, interest);
+    }
     for (const p of matured) {
       const when = p.maturityDate ?? p.updatedAt;
       const key = `${when.getUTCFullYear()}-${String(when.getUTCMonth() + 1).padStart(2, "0")}`;
       const bucket = byKey[key];
-      if (!bucket || p.accruedKobo <= 0n) continue;
-      bucket.paidKobo += p.accruedKobo;
-      bucket.accruedKobo += p.accruedKobo;
+      if (!bucket) continue;
+      const interest = p.accruedKobo > 0n ? p.accruedKobo : interestByPlacementId.get(p.id) ?? 0n;
+      if (interest <= 0n) continue;
+      bucket.paidKobo += interest;
+      bucket.accruedKobo += interest;
     }
 
     const activeFixed = await prisma.placement.findMany({
@@ -2199,7 +2229,8 @@ adminResourcesRouter.get(
       const monthCap = m.end.getTime() < now.getTime() ? m.end : now;
       for (const p of activeFixed) {
         const from = p.startDate.getTime() > m.start.getTime() ? p.startDate : m.start;
-        const hardEnd = p.maturityDate && p.maturityDate.getTime() < monthCap.getTime() ? p.maturityDate : monthCap;
+        const hardEnd =
+          p.maturityDate && p.maturityDate.getTime() < monthCap.getTime() ? p.maturityDate : monthCap;
         if (hardEnd.getTime() <= from.getTime()) continue;
         const days = Math.max(0, Math.floor((hardEnd.getTime() - from.getTime()) / dayMs));
         if (days <= 0) continue;
@@ -2207,14 +2238,30 @@ adminResourcesRouter.get(
       }
     }
 
+    const rows = months.map((m) => ({
+      month: m.month,
+      accruedNaira: koboToNaira(m.accruedKobo),
+      paidNaira: koboToNaira(m.paidKobo),
+    }));
+    const maxNaira = rows.reduce((s, r) => Math.max(s, r.accruedNaira, r.paidNaira), 0);
+    const scale =
+      maxNaira >= 1_000_000
+        ? { divisor: 1_000_000, unit: "millions" as const, label: "₦ millions" }
+        : maxNaira >= 1_000
+          ? { divisor: 1_000, unit: "thousands" as const, label: "₦ thousands" }
+          : { divisor: 1, unit: "naira" as const, label: "₦" };
+
     res.json({
-      data: months.map((m) => ({
-        month: m.month,
-        accrued: koboToNaira(m.accruedKobo) / 1_000_000,
-        paid: koboToNaira(m.paidKobo) / 1_000_000,
-        accruedNaira: koboToNaira(m.accruedKobo),
-        paidNaira: koboToNaira(m.paidKobo),
-      })),
+      data: {
+        scale,
+        series: rows.map((r) => ({
+          month: r.month,
+          accrued: r.accruedNaira / scale.divisor,
+          paid: r.paidNaira / scale.divisor,
+          accruedNaira: r.accruedNaira,
+          paidNaira: r.paidNaira,
+        })),
+      },
     });
   }),
 );
@@ -2236,9 +2283,10 @@ adminResourcesRouter.get(
     horizonEnd.setDate(week0.getDate() + 7 * 6 - 1);
     horizonEnd.setHours(23, 59, 59, 999);
 
+    // Include already-matured plans in-window so payouts show on the chart.
     const rows = await prisma.placement.findMany({
       where: {
-        status: "ACTIVE",
+        status: { in: ["ACTIVE", "MATURED"] },
         maturityDate: { gte: week0, lte: horizonEnd },
       },
       select: {
@@ -2246,6 +2294,8 @@ adminResourcesRouter.get(
         rateBps: true,
         tenorDays: true,
         maturityDate: true,
+        accruedKobo: true,
+        status: true,
       },
     });
 
@@ -2263,7 +2313,9 @@ adminResourcesRouter.get(
     for (const p of rows) {
       if (!p.maturityDate) continue;
       const interest =
-        (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 10000n;
+        p.status === "MATURED" && p.accruedKobo > 0n
+          ? p.accruedKobo
+          : (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 10000n;
       const expected = p.principalKobo + interest;
       const bucket = buckets.find(
         (b) => p.maturityDate! >= b.start && p.maturityDate! <= b.end,
@@ -2271,14 +2323,31 @@ adminResourcesRouter.get(
       if (bucket) bucket.valueKobo += expected;
     }
 
+    const mapped = buckets.map((b) => ({
+      week: b.week,
+      valueNaira: koboToNaira(b.valueKobo),
+      from: b.start.toISOString().slice(0, 10),
+      to: b.end.toISOString().slice(0, 10),
+    }));
+    const maxNaira = mapped.reduce((s, r) => Math.max(s, r.valueNaira), 0);
+    const scale =
+      maxNaira >= 1_000_000
+        ? { divisor: 1_000_000, unit: "millions" as const, label: "₦ millions" }
+        : maxNaira >= 1_000
+          ? { divisor: 1_000, unit: "thousands" as const, label: "₦ thousands" }
+          : { divisor: 1, unit: "naira" as const, label: "₦" };
+
     res.json({
-      data: buckets.map((b) => ({
-        week: b.week,
-        value: koboToNaira(b.valueKobo) / 1_000_000,
-        valueNaira: koboToNaira(b.valueKobo),
-        from: b.start.toISOString().slice(0, 10),
-        to: b.end.toISOString().slice(0, 10),
-      })),
+      data: {
+        scale,
+        series: mapped.map((b) => ({
+          week: b.week,
+          value: b.valueNaira / scale.divisor,
+          valueNaira: b.valueNaira,
+          from: b.from,
+          to: b.to,
+        })),
+      },
     });
   }),
 );
