@@ -1465,6 +1465,7 @@ adminRouter.get(
         subject: t.subject,
         body: t.body,
         status: t.status,
+        priority: t.priority || "normal",
         attachmentUrl: t.attachmentUrl,
         attachmentName: t.attachmentName,
         assigneeAdminId: t.assigneeAdminId,
@@ -1493,6 +1494,7 @@ adminRouter.post(
         category: z.string().min(1).max(80),
         subject: z.string().min(1).max(160),
         body: z.string().min(1).max(4000),
+        priority: z.enum(["urgent", "high", "normal", "low"]).optional(),
       })
       .parse(req.body);
     const customer = await prisma.user.findUnique({ where: { id: body.userId } });
@@ -1503,6 +1505,7 @@ adminRouter.post(
         category: body.category,
         subject: body.subject.trim(),
         body: body.body.trim(),
+        priority: body.priority ?? "normal",
         messages: {
           create: {
             author: "SUPPORT",
@@ -1523,12 +1526,13 @@ adminRouter.post(
       action: "support.ticket.created",
       entityType: "SupportTicket",
       entityId: ticket.id,
-      after: { userId: body.userId, subject: ticket.subject },
+      after: { userId: body.userId, subject: ticket.subject, priority: ticket.priority },
     });
     res.status(201).json({
       data: {
         id: ticket.id,
         status: ticket.status,
+        priority: ticket.priority,
         subject: ticket.subject,
         category: ticket.category,
         createdAt: ticket.createdAt,
@@ -1544,6 +1548,7 @@ adminRouter.patch(
     const body = z
       .object({
         status: z.enum(["OPEN", "IN_PROGRESS", "RESOLVED", "CLOSED"]).optional(),
+        priority: z.enum(["urgent", "high", "normal", "low"]).optional(),
         adminNote: z.string().optional(),
         reply: z.string().min(1).max(4000).optional(),
         /** Real Team admin id — null clears assignee. */
@@ -1622,6 +1627,7 @@ adminRouter.patch(
           (replyText || (body.assigneeAdminId !== undefined && body.assigneeAdminId)
             ? "IN_PROGRESS"
             : undefined),
+        ...(body.priority !== undefined ? { priority: body.priority } : {}),
         ...(body.assigneeAdminId !== undefined
           ? { assigneeAdminId: body.assigneeAdminId }
           : {}),
@@ -1661,6 +1667,7 @@ adminRouter.patch(
       entityId: row.id,
       after: {
         status: row.status,
+        priority: row.priority,
         replied: Boolean(replyText),
         assigneeAdminId: row.assigneeAdminId,
         assigneeName: row.assigneeAdmin?.name ?? null,
@@ -1670,6 +1677,7 @@ adminRouter.patch(
       data: {
         id: row.id,
         status: row.status,
+        priority: row.priority,
         subject: row.subject,
         body: row.body,
         attachmentUrl: row.attachmentUrl,
