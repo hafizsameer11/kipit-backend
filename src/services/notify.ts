@@ -128,7 +128,8 @@ export type CustomerTxnEmailKind =
   | "withdrawal"
   | "investment"
   | "withdrawal_result"
-  | "auto_invest_failed";
+  | "auto_invest_failed"
+  | "gift_expired";
 
 export async function sendCustomerTxnEmail(input: {
   to: string;
@@ -158,6 +159,11 @@ export async function sendCustomerTxnEmail(input: {
       subject: "Auto-invest skipped",
       title: "Auto-invest could not run",
       line: "auto-invest could not be completed.",
+    },
+    gift_expired: {
+      subject: "Gift returned to your wallet",
+      title: "Unclaimed gift refunded",
+      line: "was returned to your wallet because the gift was not claimed in time.",
     },
   }[input.kind];
   const amount = `₦${input.amountNaira.toLocaleString("en-NG")}`;
@@ -241,7 +247,7 @@ export async function createUserNotification(input: {
 
   const pushKind: PushKind =
     input.pushKind ??
-    (input.emailKind === "deposit"
+    (input.emailKind === "deposit" || input.emailKind === "gift_expired"
       ? "deposit"
       : input.emailKind === "withdrawal" || input.emailKind === "withdrawal_result"
         ? "withdrawal"
@@ -269,7 +275,7 @@ export async function createUserNotification(input: {
 
   const prefs = user.notificationPrefs;
   const allow =
-    input.emailKind === "deposit"
+    input.emailKind === "deposit" || input.emailKind === "gift_expired"
       ? prefs?.emailDeposits !== false
       : input.emailKind === "withdrawal" || input.emailKind === "withdrawal_result"
         ? prefs?.emailWithdrawals !== false

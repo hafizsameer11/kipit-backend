@@ -5,6 +5,7 @@ import { AppError } from "../lib/errors.js";
 import { env } from "../lib/env.js";
 import { koboToNaira } from "../lib/crypto.js";
 import { ensureSystemAccount, postJournal } from "./ledger.js";
+import { creditWalletFrom } from "./money.js";
 import { writeAudit } from "./audit.js";
 
 /** Normalize phone digits for gift matching (NG-friendly). */
@@ -42,6 +43,75 @@ function rateForTenorDays(
     return fallback;
   }
   return band;
+}
+
+function giftRefundIdempotencyKey(claimCode: string) {
+  return `gift-refund-${claimCode}`;
+}
+
+/**
+ * Mark an unclaimed gift expired and return suspense funds to the sender's wallet.
+ * Idempotent via ledger key `gift-refund-{claimCode}`.
+ */
+export async function refundExpiredGift(gift: Gift): Promise<boolean> {
+  if (gift.status === "CLAIMED" || gift.status === "CANCELLED") return false;
+  if (gift.amountKobo <= 0n) return false;
+  if (gift.status === "PENDING") {
+    if (!gift.expiresAt || gift.expiresAt.getTime() > Date.now()) return false;
+  } else if (gift.status !== "EXPIRED") {
+    return false;
+  }
+
+  await prisma.gift.updateMany({
+    where: { id: gift.id, status: "PENDING" },
+    data: { status: "EXPIRED" },
+  });
+
+  const latest = await prisma.gift.findUnique({ where: { id: gift.id } });
+  if (!latest || latest.status === "CLAIMED") return false;
+  if (latest.status !== "EXPIRED") return false;
+
+  const idempotencyKey = giftRefundIdempotencyKey(gift.claimCode);
+  const already = await prisma.journalEntry.findUnique({ where: { idempotencyKey } });
+  const suspense = await ensureSystemAccount("SYSTEM_SUSPENSE");
+  await creditWalletFrom({
+    userId: gift.senderId,
+    amountKobo: gift.amountKobo,
+    kind: "DEPOSIT",
+    idempotencyKey,
+    description: `Unclaimed gift returned (${gift.claimCode})`,
+    debitAccountId: suspense.id,
+    metadata: { giftId: gift.id, claimCode: gift.claimCode, giftRefund: true },
+  });
+  if (already) return false;
+
+  await writeAudit({
+    actorUserId: gift.senderId,
+    action: "gift.expired_refunded",
+    entityType: "Gift",
+    entityId: gift.id,
+    after: { claimCode: gift.claimCode, amountKobo: gift.amountKobo.toString() },
+  });
+
+  const who =
+    gift.recipientName?.trim() ||
+    gift.recipientEmail?.trim() ||
+    gift.recipientPhone?.trim() ||
+    "your recipient";
+  const amountNaira = koboToNaira(gift.amountKobo);
+  const { notifyCustomer } = await import("./notify.js");
+  await notifyCustomer({
+    userId: gift.senderId,
+    title: "Gift returned to wallet",
+    body: `₦${amountNaira.toLocaleString("en-NG")} was returned because ${who} did not claim the gift in time.`,
+    href: "/wallet",
+    emailKind: "gift_expired",
+    amountNaira,
+    emailDetail: `The gift was not claimed within 30 days, so the full amount is back in your wallet.`,
+    pushKind: "deposit",
+  }).catch(() => undefined);
+
+  return true;
 }
 
 export type ClaimedGiftResult = {
@@ -87,10 +157,7 @@ export async function claimGiftForUser(
     throw new AppError(400, "This gift cannot be claimed", "GIFT_UNAVAILABLE");
   }
   if (gift.expiresAt && gift.expiresAt.getTime() < Date.now()) {
-    await prisma.gift.update({
-      where: { id: gift.id },
-      data: { status: "EXPIRED" },
-    });
+    await refundExpiredGift(gift);
     throw new AppError(410, "This gift has expired", "GIFT_EXPIRED");
   }
   if (gift.senderId === userId) {
