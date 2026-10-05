@@ -59,7 +59,14 @@ export type StoredReconRecord = {
   reference: string;
   customerName: string;
   source: string;
+  /** @deprecated Prefer providerAmount - kept for older rows. */
   variance: number;
+  providerAmount?: number;
+  ledgerAmount?: number;
+  channel?: "Deposit" | "Withdrawal" | "Card" | "Transfer";
+  internalRef?: string;
+  /** Derived exception kind when status is open. */
+  exception?: "unmatched" | "variance";
   status: "open" | "investigating" | "resolved";
   notes: { at: string; author: string; body: string }[];
   createdAt: string;

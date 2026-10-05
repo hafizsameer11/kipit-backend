@@ -5,6 +5,7 @@ import { runMarketingDigestJob } from "./jobs/marketing-digest.js";
 import { runAutoInvestJob } from "./jobs/auto-invest.js";
 import { runGiftExpiryJob } from "./jobs/gift-expiry.js";
 import { runApplyRateChangesJob } from "./jobs/apply-rate-changes.js";
+import { runWalletReconJob } from "./jobs/wallet-recon.js";
 import { prisma } from "./lib/prisma.js";
 import { connectRedis } from "./lib/redis.js";
 import { getConfigJson } from "./services/admin-ops-store.js";
@@ -16,6 +17,7 @@ const DIGEST_CHECK_MS = 60_000;
 const AUTO_INVEST_INTERVAL_MS = 60_000;
 const GIFT_EXPIRY_INTERVAL_MS = 60_000;
 const RATE_APPLY_INTERVAL_MS = 60_000;
+const WALLET_RECON_INTERVAL_MS = 15 * 60_000;
 
 function msUntilMidnight() {
   const now = new Date();
@@ -137,6 +139,17 @@ async function tickApplyRates() {
   }
 }
 
+async function tickWalletRecon() {
+  try {
+    const result = await runWalletReconJob();
+    if (result.exceptions || result.open) {
+      console.log("[worker] wallet-recon", result);
+    }
+  } catch (err) {
+    console.error("[worker] wallet-recon failed", err);
+  }
+}
+
 async function main() {
   await prisma.$connect();
   try {
@@ -146,7 +159,7 @@ async function main() {
   }
 
   console.log(
-    "kipit-worker started — maturity @00:00, digest @configured time, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s",
+    "kipit-worker started — maturity @00:00, digest @configured time, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s, wallet-recon every 15m",
   );
 
   setTimeout(() => {
@@ -168,6 +181,9 @@ async function main() {
 
   void tickApplyRates();
   setInterval(() => void tickApplyRates(), RATE_APPLY_INTERVAL_MS);
+
+  void tickWalletRecon();
+  setInterval(() => void tickWalletRecon(), WALLET_RECON_INTERVAL_MS);
 
   void tickDigest();
   setInterval(() => void tickDigest(), DIGEST_CHECK_MS);
