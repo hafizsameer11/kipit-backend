@@ -493,17 +493,21 @@ model Gift {
 }
 
 model AutoInvestRule {
-  id          String   @id @default(cuid())
+  id          String    @id @default(cuid())
   userId      String
-  user        User     @relation(fields: [userId], references: [id], onDelete: Cascade)
+  user        User      @relation(fields: [userId], references: [id], onDelete: Cascade)
   label       String
   amountKobo  BigInt
   dayOfMonth  Int
-  /// Weekly | Every 2 weeks | Monthly — additive; older clients may still encode this in label.
-  frequency   String   @default("Monthly")
-  active      Boolean  @default(true)
+  /// Every 10 minutes | Every hour | Weekly | Every 2 weeks | Monthly
+  frequency   String    @default("Monthly")
+  active      Boolean   @default(true)
   cardTokenId String?
-  createdAt   DateTime @default(now())
+  lastRunAt   DateTime?
+  nextRunAt   DateTime?
+  createdAt   DateTime  @default(now())
+
+  @@index([active, nextRunAt])
 }
 
 model Notification {
