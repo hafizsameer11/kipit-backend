@@ -1377,23 +1377,44 @@ adminResourcesRouter.get(
   "/recon",
   requireAdmin,
   asyncHandler(async (_req, res) => {
+    // Keep dashboard fresh when ops open the page.
+    try {
+      const { runWalletReconJobThrottled } = await import("../jobs/wallet-recon.js");
+      await runWalletReconJobThrottled();
+    } catch (err) {
+      console.warn("[recon] scan failed", err);
+    }
+
     const records = await getConfigJson<StoredReconRecord[]>("admin.recon.records", []);
     res.json({
-      data: records.map((r) => ({
-        id: r.id,
-        providerRef: r.reference,
-        internalRef: r.id,
-        source: r.source,
-        customer: r.customerName,
-        providerAmount: r.variance,
-        ledgerAmount: 0,
-        date: r.createdAt.slice(0, 10),
-        status: r.status,
-        channel: r.source,
-        note: r.notes.at(-1)?.body,
-        owner: undefined,
-        timeline: r.notes.map((n) => ({ label: n.body, at: n.at, by: n.author })),
-      })),
+      data: records.map((r) => {
+        const providerAmount = r.providerAmount ?? (r.status === "open" ? Math.abs(r.variance) : 0);
+        const ledgerAmount = r.ledgerAmount ?? 0;
+        const uiStatus =
+          r.status === "investigating" || r.status === "resolved"
+            ? r.status
+            : r.exception === "variance" ||
+                (Math.abs(providerAmount - ledgerAmount) > 0.009 &&
+                  providerAmount > 0 &&
+                  ledgerAmount > 0)
+              ? "variance"
+              : "unmatched";
+        return {
+          id: r.id,
+          providerRef: r.reference,
+          internalRef: r.internalRef ?? r.id,
+          source: r.source,
+          customer: r.customerName,
+          providerAmount,
+          ledgerAmount,
+          date: r.createdAt.slice(0, 10),
+          status: uiStatus,
+          channel: r.channel ?? r.source,
+          note: r.notes.at(-1)?.body,
+          owner: undefined,
+          timeline: r.notes.map((n) => ({ label: n.body, at: n.at, by: n.author })),
+        };
+      }),
     });
   }),
 );

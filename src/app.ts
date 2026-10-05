@@ -26,6 +26,7 @@ import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import { runAutoInvestJob } from "./jobs/auto-invest.js";
 import { runGiftExpiryJob } from "./jobs/gift-expiry.js";
 import { runApplyRateChangesJob } from "./jobs/apply-rate-changes.js";
+import { runWalletReconJob } from "./jobs/wallet-recon.js";
 import type { AuthRequest } from "./middleware/auth.js";
 import { requireAuth } from "./middleware/auth.js";
 import { env, monnifyUseMock, paystackUseMock, premblyUseMock, askAiLlmEnabled } from "./lib/env.js";
@@ -190,6 +191,17 @@ export function createApp() {
         return res.status(404).json({ error: { message: "Not found" } });
       }
       const result = await runApplyRateChangesJob();
+      res.json({ data: result });
+    }),
+  );
+
+  app.post(
+    "/v1/admin/jobs/wallet-recon/run",
+    asyncHandler(async (_req, res) => {
+      if (process.env.NODE_ENV === "production") {
+        return res.status(404).json({ error: { message: "Not found" } });
+      }
+      const result = await runWalletReconJob();
       res.json({ data: result });
     }),
   );
