@@ -10,8 +10,12 @@ import { runWalletReconJob } from "./jobs/wallet-recon.js";
 import { prisma } from "./lib/prisma.js";
 import { connectRedis } from "./lib/redis.js";
 import { getConfigJson } from "./services/admin-ops-store.js";
+import {
+  currentLagosHm,
+  getOpsCutoffs,
+  lagosDateKey,
+} from "./services/system-settings.js";
 
-const DAY_MS = 24 * 60 * 60 * 1000;
 const KYC_INTERVAL_MS = 60_000;
 const MONNIFY_VA_INTERVAL_MS = 60_000;
 const DIGEST_CHECK_MS = 60_000;
@@ -19,43 +23,12 @@ const CAMPAIGN_CHECK_MS = 60_000;
 const AUTO_INVEST_INTERVAL_MS = 60_000;
 const GIFT_EXPIRY_INTERVAL_MS = 60_000;
 const RATE_APPLY_INTERVAL_MS = 60_000;
-const WALLET_RECON_INTERVAL_MS = 15 * 60_000;
-
-function msUntilMidnight() {
-  const now = new Date();
-  const next = new Date(now);
-  next.setHours(24, 0, 0, 0);
-  return next.getTime() - now.getTime();
-}
-
-/** HH:MM in Africa/Lagos (or server local if Intl missing). */
-function currentLagosHm(): string {
-  try {
-    const parts = new Intl.DateTimeFormat("en-GB", {
-      timeZone: "Africa/Lagos",
-      hour: "2-digit",
-      minute: "2-digit",
-      hour12: false,
-    }).formatToParts(new Date());
-    const hour = parts.find((p) => p.type === "hour")?.value ?? "00";
-    const minute = parts.find((p) => p.type === "minute")?.value ?? "00";
-    return `${hour}:${minute}`;
-  } catch {
-    const d = new Date();
-    return `${String(d.getHours()).padStart(2, "0")}:${String(d.getMinutes()).padStart(2, "0")}`;
-  }
-}
-
-function lagosDateKey(): string {
-  try {
-    return new Intl.DateTimeFormat("en-CA", { timeZone: "Africa/Lagos" }).format(new Date());
-  } catch {
-    return new Date().toISOString().slice(0, 10);
-  }
-}
+const SCHEDULE_CHECK_MS = 60_000;
 
 let lastDigestDateKey = "";
 let lastOpsDigestDateKey = "";
+let lastMaturityDateKey = "";
+let lastReconDateKey = "";
 
 async function tickDigest() {
   try {
@@ -104,13 +77,33 @@ async function tickCampaigns() {
   }
 }
 
-async function tickMaturity() {
-  console.log("[worker] running maturity engine…");
+async function tickMaturityScheduled() {
   try {
+    const { interestAccrual } = await getOpsCutoffs();
+    const nowHm = currentLagosHm();
+    const dateKey = lagosDateKey();
+    if (nowHm !== interestAccrual || lastMaturityDateKey === dateKey) return;
+    lastMaturityDateKey = dateKey;
+    console.log(`[worker] running maturity/interest engine @ ${interestAccrual} Lagos…`);
     const result = await runMaturityEngine();
     console.log("[worker] maturity ok", result);
   } catch (err) {
     console.error("[worker] maturity failed", err);
+  }
+}
+
+async function tickWalletReconScheduled() {
+  try {
+    const { reconRun } = await getOpsCutoffs();
+    const nowHm = currentLagosHm();
+    const dateKey = lagosDateKey();
+    if (nowHm !== reconRun || lastReconDateKey === dateKey) return;
+    lastReconDateKey = dateKey;
+    console.log(`[worker] running wallet-recon @ ${reconRun} Lagos…`);
+    const result = await runWalletReconJob();
+    console.log("[worker] wallet-recon ok", result);
+  } catch (err) {
+    console.error("[worker] wallet-recon failed", err);
   }
 }
 
@@ -169,17 +162,6 @@ async function tickApplyRates() {
   }
 }
 
-async function tickWalletRecon() {
-  try {
-    const result = await runWalletReconJob();
-    if (result.exceptions || result.open) {
-      console.log("[worker] wallet-recon", result);
-    }
-  } catch (err) {
-    console.error("[worker] wallet-recon failed", err);
-  }
-}
-
 async function main() {
   await prisma.$connect();
   try {
@@ -188,14 +170,16 @@ async function main() {
     console.warn("[worker] redis unavailable");
   }
 
-  console.log(
-    "kipit-worker started — maturity @00:00, digest @configured time, ops-digest @07:00 Lagos, campaigns every 60s, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s, wallet-recon every 15m",
-  );
+  const cutoffs = await getOpsCutoffs().catch(() => ({
+    payoutBatch: "15:30",
+    valueDate: "17:00",
+    reconRun: "07:00",
+    interestAccrual: "00:15",
+  }));
 
-  setTimeout(() => {
-    void tickMaturity();
-    setInterval(() => void tickMaturity(), DAY_MS);
-  }, msUntilMidnight());
+  console.log(
+    `kipit-worker started — maturity/interest @${cutoffs.interestAccrual} Lagos, recon @${cutoffs.reconRun} Lagos, digest @configured time, ops-digest @07:00 Lagos, campaigns every 60s, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s`,
+  );
 
   void tickKyc();
   setInterval(() => void tickKyc(), KYC_INTERVAL_MS);
@@ -212,21 +196,24 @@ async function main() {
   void tickApplyRates();
   setInterval(() => void tickApplyRates(), RATE_APPLY_INTERVAL_MS);
 
-  void tickWalletRecon();
-  setInterval(() => void tickWalletRecon(), WALLET_RECON_INTERVAL_MS);
-
   void tickDigest();
   setInterval(() => void tickDigest(), DIGEST_CHECK_MS);
 
   void tickOpsDigest();
   setInterval(() => void tickOpsDigest(), DIGEST_CHECK_MS);
 
+  void tickMaturityScheduled();
+  setInterval(() => void tickMaturityScheduled(), SCHEDULE_CHECK_MS);
+
+  void tickWalletReconScheduled();
+  setInterval(() => void tickWalletReconScheduled(), SCHEDULE_CHECK_MS);
+
   void tickCampaigns();
   setInterval(() => void tickCampaigns(), CAMPAIGN_CHECK_MS);
 
   if (process.env.NODE_ENV !== "production") {
     console.log("[worker] scheduling first maturity run in 5s (dev)");
-    setTimeout(() => void tickMaturity(), 5000);
+    setTimeout(() => void runMaturityEngine().then((r) => console.log("[worker] maturity ok", r)), 5000);
   }
 }
 

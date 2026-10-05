@@ -124,7 +124,7 @@ export type SystemSupportContacts = {
 /** Public-safe slice of system settings for the customer apps. */
 export async function getPublicAppConfig() {
   const settings = await getConfig("system.settings", DEFAULT_SETTINGS);
-  const { getOpsLimits } = await import(
+  const { getOpsLimits, getOpsCutoffs } = await import(
     "../services/system-settings.js"
   );
   const support = {
@@ -146,6 +146,7 @@ export async function getPublicAppConfig() {
     return DEFAULT_SETTINGS.flags.find((f) => f.id === id)?.enabled ?? true;
   };
   const ops = await getOpsLimits();
+  const cutoffs = await getOpsCutoffs();
   return {
     support: {
       phone: String(support.phone || "").trim(),
@@ -172,6 +173,12 @@ export async function getPublicAppConfig() {
     fees: {
       withdrawal: ops.withdrawalFee,
       cardFundingPct: ops.cardFundingPct,
+    },
+    cutoffs: {
+      payoutBatch: cutoffs.payoutBatch,
+      valueDate: cutoffs.valueDate,
+      reconRun: cutoffs.reconRun,
+      interestAccrual: cutoffs.interestAccrual,
     },
   };
 }

@@ -138,21 +138,35 @@ investRouter.post(
         "BELOW_MINIMUM",
       );
     }
+    const { interestValueDate } = await import("../services/system-settings.js");
+    const value = await interestValueDate();
     await moveWalletToCall(req.userId!, nairaToKobo(body.amount), body.idempotencyKey);
     const call = await ensureUserCall(req.userId!);
     const { createUserNotification } = await import("../services/notify.js");
     await createUserNotification({
       userId: req.userId!,
       title: "Added to Call Account",
-      body: `₦${body.amount.toLocaleString()} moved from your wallet into Call Account.`,
+      body: `₦${body.amount.toLocaleString()} moved from your wallet into Call Account.${
+        value.sameDay
+          ? " Interest starts today."
+          : ` Interest starts ${value.valueDate} (after ${value.cutoff} Lagos value cut-off).`
+      }`,
       href: "/call-account",
       pushKind: "investment",
       emailKind: "investment",
       amountNaira: body.amount,
-      emailDetail: "Call Account top-up",
+      emailDetail: value.sameDay
+        ? "Call Account top-up — interest starts today"
+        : `Call Account top-up — interest starts ${value.valueDate}`,
     }).catch(() => undefined);
     res.status(201).json({
-      data: { balance: koboToNaira(call.balanceKobo), balanceKobo: call.balanceKobo.toString() },
+      data: {
+        balance: koboToNaira(call.balanceKobo),
+        balanceKobo: call.balanceKobo.toString(),
+        interestStartsOn: value.valueDate,
+        sameDayInterest: value.sameDay,
+        valueDateCutoff: value.cutoff,
+      },
     });
   }),
 );
@@ -238,7 +252,9 @@ investRouter.post(
       .parse(req.body);
 
     await verifyTransactionPin(req.userId!, body.pin);
-    const { getOpsLimits } = await import("../services/system-settings.js");
+    const { getOpsLimits, interestValueDate, lagosDayStartUtc } = await import(
+      "../services/system-settings.js"
+    );
     const ops = await getOpsLimits();
     if (body.amount < ops.minFixedPlacement) {
       throw new AppError(
@@ -247,6 +263,8 @@ investRouter.post(
         "BELOW_MINIMUM",
       );
     }
+    const value = await interestValueDate();
+    const startDate = lagosDayStartUtc(value.valueDate);
     const bands = await prisma.rateBand.findMany();
     const band = rateForTenorDays(body.tenorDays, bands);
     const amountKobo = nairaToKobo(body.amount);
@@ -271,8 +289,8 @@ investRouter.post(
       creditAccountId: placementAccount.id,
     });
 
-    const maturityDate = new Date();
-    maturityDate.setDate(maturityDate.getDate() + body.tenorDays);
+    const maturityDate = new Date(startDate);
+    maturityDate.setUTCDate(maturityDate.getUTCDate() + body.tenorDays);
 
     const placement = await prisma.placement.create({
       data: {
@@ -282,6 +300,7 @@ investRouter.post(
         principalKobo: amountKobo,
         rateBps: band.rateBps,
         tenorDays: body.tenorDays,
+        startDate,
         maturityDate,
         maturityInstruction: body.maturityInstruction,
         goalKobo: body.goalAmount ? nairaToKobo(body.goalAmount) : null,
@@ -315,8 +334,11 @@ investRouter.post(
         amount: body.amount,
         ratePct: band.rateBps / 100,
         tenorDays: body.tenorDays,
+        startDate: value.valueDate,
         maturityDate: maturityDate.toISOString().slice(0, 10),
         expectedInterest: koboToNaira(interestForPeriod(amountKobo, band.rateBps, body.tenorDays)),
+        sameDayInterest: value.sameDay,
+        valueDateCutoff: value.cutoff,
       },
     });
   }),
