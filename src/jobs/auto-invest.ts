@@ -60,6 +60,9 @@ async function executeRule(
       body: `Not enough wallet balance for ${destination} (₦${amountNaira.toLocaleString("en-NG")} needed). Top up and we'll try again next run.`,
       href: "/wallet/add-money",
       pushKind: "investment",
+      emailKind: "auto_invest_failed",
+      amountNaira,
+      emailDetail: `Insufficient wallet balance for ${destination}. Top up and we'll try again on the next run.`,
     }).catch(() => undefined);
     await markLastRun(rule.id);
     return { status: "skipped_insufficient" as const };
@@ -109,6 +112,9 @@ async function executeRule(
       body: `No rate band available for ${destination}. Try Call Account or another plan.`,
       href: "/invest",
       pushKind: "investment",
+      emailKind: "auto_invest_failed",
+      amountNaira,
+      emailDetail: `No rate band available for ${destination}. Try Call Account or another plan.`,
     }).catch(() => undefined);
     await markLastRun(rule.id);
     return { status: "skipped_no_band" as const };
@@ -215,12 +221,17 @@ export async function runAutoInvestJob() {
     } catch (err) {
       errors++;
       console.error("[auto-invest] rule failed", rule.id, err);
+      const amountNaira = koboToNaira(rule.amountKobo);
+      const destination = stripFrequencyPrefix(rule.label).trim() || "your plan";
       await createUserNotification({
         userId: rule.userId,
         title: "Auto-invest failed",
         body: "We couldn't complete your scheduled invest. We'll try again on the next run.",
         href: "/invest",
         pushKind: "investment",
+        emailKind: "auto_invest_failed",
+        amountNaira,
+        emailDetail: `We couldn't complete auto-invest into ${destination}. We'll try again on the next run.`,
       }).catch(() => undefined);
     }
   }

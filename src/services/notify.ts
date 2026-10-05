@@ -123,10 +123,17 @@ export async function sendTicketAssignedEmail(input: {
   return sendEmail({ to: input.to, subject, text, html });
 }
 
+export type CustomerTxnEmailKind =
+  | "deposit"
+  | "withdrawal"
+  | "investment"
+  | "withdrawal_result"
+  | "auto_invest_failed";
+
 export async function sendCustomerTxnEmail(input: {
   to: string;
   firstName: string;
-  kind: "deposit" | "withdrawal" | "investment" | "withdrawal_result";
+  kind: CustomerTxnEmailKind;
   amountNaira: number;
   detail?: string;
 }) {
@@ -146,6 +153,11 @@ export async function sendCustomerTxnEmail(input: {
       subject: "Withdrawal update",
       title: "Withdrawal update",
       line: input.detail ?? "status was updated.",
+    },
+    auto_invest_failed: {
+      subject: "Auto-invest skipped",
+      title: "Auto-invest could not run",
+      line: "auto-invest could not be completed.",
     },
   }[input.kind];
   const amount = `₦${input.amountNaira.toLocaleString("en-NG")}`;
@@ -212,7 +224,7 @@ export async function createUserNotification(input: {
   body: string;
   href?: string;
   pushKind?: PushKind;
-  emailKind?: "deposit" | "withdrawal" | "investment" | "withdrawal_result";
+  emailKind?: CustomerTxnEmailKind;
   amountNaira?: number;
   emailDetail?: string;
   /** Skip device push (rare). */
@@ -233,7 +245,7 @@ export async function createUserNotification(input: {
       ? "deposit"
       : input.emailKind === "withdrawal" || input.emailKind === "withdrawal_result"
         ? "withdrawal"
-        : input.emailKind === "investment"
+        : input.emailKind === "investment" || input.emailKind === "auto_invest_failed"
           ? "investment"
           : "general");
 
@@ -279,7 +291,7 @@ export async function notifyCustomer(input: {
   title: string;
   body: string;
   href?: string;
-  emailKind?: "deposit" | "withdrawal" | "investment" | "withdrawal_result";
+  emailKind?: CustomerTxnEmailKind;
   amountNaira?: number;
   emailDetail?: string;
   pushKind?: PushKind;
