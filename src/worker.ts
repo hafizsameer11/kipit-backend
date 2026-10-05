@@ -4,6 +4,7 @@ import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import { runMarketingDigestJob } from "./jobs/marketing-digest.js";
 import { runAutoInvestJob } from "./jobs/auto-invest.js";
 import { runGiftExpiryJob } from "./jobs/gift-expiry.js";
+import { runApplyRateChangesJob } from "./jobs/apply-rate-changes.js";
 import { prisma } from "./lib/prisma.js";
 import { connectRedis } from "./lib/redis.js";
 import { getConfigJson } from "./services/admin-ops-store.js";
@@ -14,6 +15,7 @@ const MONNIFY_VA_INTERVAL_MS = 60_000;
 const DIGEST_CHECK_MS = 60_000;
 const AUTO_INVEST_INTERVAL_MS = 60_000;
 const GIFT_EXPIRY_INTERVAL_MS = 60_000;
+const RATE_APPLY_INTERVAL_MS = 60_000;
 
 function msUntilMidnight() {
   const now = new Date();
@@ -124,6 +126,17 @@ async function tickGiftExpiry() {
   }
 }
 
+async function tickApplyRates() {
+  try {
+    const result = await runApplyRateChangesJob();
+    if (result.repaired || result.applied) {
+      console.log("[worker] apply-rates", result);
+    }
+  } catch (err) {
+    console.error("[worker] apply-rates failed", err);
+  }
+}
+
 async function main() {
   await prisma.$connect();
   try {
@@ -133,7 +146,7 @@ async function main() {
   }
 
   console.log(
-    "kipit-worker started — maturity @00:00, digest @configured time, kyc-verify + monnify-va + auto-invest + gift-expiry every 60s",
+    "kipit-worker started — maturity @00:00, digest @configured time, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s",
   );
 
   setTimeout(() => {
@@ -152,6 +165,9 @@ async function main() {
 
   void tickGiftExpiry();
   setInterval(() => void tickGiftExpiry(), GIFT_EXPIRY_INTERVAL_MS);
+
+  void tickApplyRates();
+  setInterval(() => void tickApplyRates(), RATE_APPLY_INTERVAL_MS);
 
   void tickDigest();
   setInterval(() => void tickDigest(), DIGEST_CHECK_MS);

@@ -1260,13 +1260,16 @@ adminRouter.get(
   "/rates",
   requireAdmin,
   asyncHandler(async (_req, res) => {
+    const { ensureRatesApplied, rateBandAdminExtras } = await import("../services/rates.js");
+    await ensureRatesApplied();
+
     const bands = await prisma.rateBand.findMany({ orderBy: { minDays: "asc" } });
     const placements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
       select: { kind: true, principalKobo: true, tenorDays: true },
     });
-    res.json({
-      data: bands.map((b) => {
+    const data = await Promise.all(
+      bands.map(async (b) => {
         const isCallBand = b.code.toUpperCase() === "CALL" || (b.minDays === 0 && b.maxDays === 0);
         const matching = placements.filter((p) => {
           if (isCallBand) return p.kind === "CALL";
@@ -1276,13 +1279,19 @@ adminRouter.get(
           return days >= b.minDays && days <= b.maxDays;
         });
         const principalKobo = matching.reduce((s, p) => s + p.principalKobo, 0n);
+        const extras = await rateBandAdminExtras(b.id, b.rateBps);
         return {
           ...b,
+          previousBps: extras.previousBps,
+          scheduledBps: extras.scheduledBps,
+          scheduledFrom: extras.scheduledFrom,
+          status: extras.status,
           placements: matching.length,
           principal: koboToNaira(principalKobo),
         };
       }),
-    });
+    );
+    res.json({ data });
   }),
 );
 
@@ -1319,6 +1328,7 @@ adminRouter.post(
       data: {
         bandId: body.bandId,
         proposedBps: body.proposedBps,
+        previousBps: band.rateBps,
         effectiveFrom: new Date(effectiveDay),
         reason: body.reason,
         makerAdminId: req.adminId!,
@@ -1342,20 +1352,42 @@ adminRouter.post(
     }
 
     if (body.approve) {
-      await prisma.$transaction([
-        prisma.rateBand.update({
-          where: { id: row.bandId },
-          data: { rateBps: row.proposedBps, effectiveFrom: row.effectiveFrom },
-        }),
-        prisma.rateChangeRequest.update({
+      const { utcDayMs } = await import("../services/rates.js");
+      const now = new Date();
+      const dueNow = utcDayMs(row.effectiveFrom) <= utcDayMs(now);
+      const band = await prisma.rateBand.findUniqueOrThrow({ where: { id: row.bandId } });
+      const previousBps = row.previousBps ?? band.rateBps;
+
+      if (dueNow) {
+        await prisma.$transaction([
+          prisma.rateBand.update({
+            where: { id: row.bandId },
+            data: { rateBps: row.proposedBps, effectiveFrom: row.effectiveFrom },
+          }),
+          prisma.rateChangeRequest.update({
+            where: { id: row.id },
+            data: {
+              status: "APPROVED",
+              previousBps,
+              checkerAdminId: req.adminId,
+              decidedAt: now,
+              appliedAt: now,
+            },
+          }),
+        ]);
+      } else {
+        // Approved but not yet live — RateBand stays on the current rate until effectiveFrom.
+        await prisma.rateChangeRequest.update({
           where: { id: row.id },
           data: {
             status: "APPROVED",
+            previousBps,
             checkerAdminId: req.adminId,
-            decidedAt: new Date(),
+            decidedAt: now,
+            appliedAt: null,
           },
-        }),
-      ]);
+        });
+      }
     } else {
       await prisma.rateChangeRequest.update({
         where: { id: row.id },
@@ -1398,13 +1430,14 @@ adminRouter.get(
         bandId: r.bandId,
         band: r.band.label,
         code: r.band.code,
-        currentBps: r.band.rateBps,
+        currentBps: r.previousBps ?? r.band.rateBps,
         proposedBps: r.proposedBps,
-        currentRate: r.band.rateBps / 100,
+        currentRate: (r.previousBps ?? r.band.rateBps) / 100,
         proposedRate: r.proposedBps / 100,
         effectiveFrom: r.effectiveFrom,
         reason: r.reason,
         status: r.status,
+        appliedAt: r.appliedAt,
         submittedBy: byId[r.makerAdminId]?.name ?? r.makerAdminId,
         decidedBy: r.checkerAdminId ? (byId[r.checkerAdminId]?.name ?? r.checkerAdminId) : null,
         decidedAt: r.decidedAt,
