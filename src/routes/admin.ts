@@ -581,7 +581,7 @@ adminRouter.get(
     const userId = String(req.params.userId);
     const accounts = await prisma.ledgerAccount.findMany({
       where: { userId },
-      select: { id: true },
+      select: { id: true, type: true },
     });
     const accountIds = accounts.map((a) => a.id);
     if (accountIds.length === 0) {
@@ -590,17 +590,29 @@ adminRouter.get(
     }
     const lines = await prisma.journalLine.findMany({
       where: { accountId: { in: accountIds } },
-      include: { entry: true },
+      include: {
+        entry: true,
+        account: { select: { type: true } },
+      },
       orderBy: { createdAt: "desc" },
-      take: 200,
+      take: 300,
     });
-    const seen = new Set<string>();
-    const rows = [];
+    // One row per journal; prefer wallet/call lines so maturity shows the customer credit.
+    const byEntry = new Map<string, (typeof lines)[number]>();
     for (const line of lines) {
-      if (seen.has(line.entryId)) continue;
-      seen.add(line.entryId);
-      if (rows.length >= 100) break;
-      rows.push({
+      const prev = byEntry.get(line.entryId);
+      if (
+        !prev ||
+        line.account.type === "USER_WALLET" ||
+        (prev.account.type !== "USER_WALLET" && line.account.type === "USER_CALL")
+      ) {
+        byEntry.set(line.entryId, line);
+      }
+    }
+    const rows = [...byEntry.values()]
+      .sort((a, b) => b.entry.createdAt.getTime() - a.entry.createdAt.getTime())
+      .slice(0, 100)
+      .map((line) => ({
         id: line.entry.id,
         reference: line.entry.reference,
         kind: line.entry.kind,
@@ -608,8 +620,7 @@ adminRouter.get(
         direction: line.amountKobo < 0n ? "debit" : "credit",
         createdAt: line.entry.createdAt,
         description: line.entry.description,
-      });
-    }
+      }));
     res.json({ data: rows });
   }),
 );
@@ -624,17 +635,59 @@ adminRouter.get(
       take: 100,
     });
     res.json({
-      data: rows.map((p) => ({
-        id: p.id,
-        name: p.name,
-        kind: p.kind,
-        status: p.status,
-        principal: koboToNaira(p.principalKobo),
-        ratePct: p.rateBps / 100,
-        maturityDate: p.maturityDate,
-        createdAt: p.createdAt,
-      })),
+      data: rows.map((p) => {
+        const interest = interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays ?? 0);
+        return {
+          id: p.id,
+          name: p.name,
+          kind: p.kind,
+          status: p.status,
+          principal: koboToNaira(p.principalKobo),
+          ratePct: p.rateBps / 100,
+          tenorDays: p.tenorDays,
+          expectedInterest: koboToNaira(interest),
+          expectedPayout: koboToNaira(p.principalKobo + interest),
+          maturityDate: p.maturityDate,
+          createdAt: p.createdAt,
+        };
+      }),
     });
+  }),
+);
+
+/** Admin early-mature: full tenor interest, settle now (shorter hold). */
+adminRouter.post(
+  "/users/:userId/placements/:placementId/mature",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    if (req.adminRole === "READ_ONLY") {
+      throw new AppError(403, "Insufficient permissions", "FORBIDDEN");
+    }
+    const userId = String(req.params.userId);
+    const placementId = String(req.params.placementId);
+    const placement = await prisma.placement.findFirst({
+      where: { id: placementId, userId },
+    });
+    if (!placement) throw new AppError(404, "Placement not found", "NOT_FOUND");
+
+    const { maturePlacement } = await import("../services/mature-placement.js");
+    const result = await maturePlacement({ placementId, early: true });
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "placement.admin_early_mature",
+      entityType: "Placement",
+      entityId: placementId,
+      after: {
+        principal: result.principal,
+        interest: result.interest,
+        payout: result.payout,
+        daysHeld: result.daysHeld,
+        tenorDays: result.tenorDays,
+      },
+    });
+
+    res.json({ data: result });
   }),
 );
 

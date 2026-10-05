@@ -1,5 +1,6 @@
 import { prisma } from "../lib/prisma.js";
-import { creditCallFrom, creditWalletFrom, ensureSystemAccount, interestForPeriod } from "../services/money.js";
+import { creditCallFrom, ensureSystemAccount, interestForPeriod } from "../services/money.js";
+import { maturePlacement } from "../services/mature-placement.js";
 
 export async function runMaturityEngine() {
   const run = await prisma.jobRun.create({
@@ -20,61 +21,15 @@ export async function runMaturityEngine() {
     });
 
     let processed = 0;
+    let errors = 0;
     for (const p of due) {
-      const interest = interestForPeriod(
-        p.principalKobo,
-        p.rateBps,
-        p.tenorDays ?? 0,
-      );
-      const payout = p.principalKobo + interest;
-
-      if (p.ledgerAccountId) {
-        await creditWalletFrom({
-          userId: p.userId,
-          amountKobo: payout,
-          kind: "MATURITY",
-          idempotencyKey: `maturity-${p.id}`,
-          description: `Maturity: ${p.name}`,
-          debitAccountId: p.ledgerAccountId,
-        });
-      } else {
-        const clearing = await ensureSystemAccount("SYSTEM_CLEARING");
-        await creditWalletFrom({
-          userId: p.userId,
-          amountKobo: payout,
-          kind: "MATURITY",
-          idempotencyKey: `maturity-${p.id}`,
-          description: `Maturity: ${p.name}`,
-          debitAccountId: clearing.id,
-        });
+      try {
+        await maturePlacement({ placementId: p.id, early: false });
+        processed++;
+      } catch (err) {
+        errors++;
+        console.error("[maturity] placement failed", p.id, err);
       }
-
-      if (p.maturityInstruction === "ROLLOVER" && p.tenorDays) {
-        // Simple rollover: leave funds in wallet and notify; full auto-reinvest can expand later
-        const { createUserNotification } = await import("../services/notify.js");
-        await createUserNotification({
-          userId: p.userId,
-          title: "Plan matured — ready to roll over",
-          body: `${p.name} matured. ₦${Number(payout) / 100} is in your wallet.`,
-          href: "/fixed-plans/create",
-          pushKind: "maturity",
-        }).catch(() => undefined);
-      } else {
-        const { createUserNotification } = await import("../services/notify.js");
-        await createUserNotification({
-          userId: p.userId,
-          title: "Plan matured",
-          body: `${p.name} matured. Funds are in your wallet.`,
-          href: "/portfolio",
-          pushKind: "maturity",
-        }).catch(() => undefined);
-      }
-
-      await prisma.placement.update({
-        where: { id: p.id },
-        data: { status: "MATURED", accruedKobo: interest },
-      });
-      processed++;
     }
 
     // Daily call interest — credit Call Account so it compounds (product: daily on Call).
@@ -105,11 +60,11 @@ export async function runMaturityEngine() {
       data: {
         status: "ok",
         finishedAt: new Date(),
-        detail: { matured: processed, callInterestAccounts: callCredits },
+        detail: { matured: processed, errors, callInterestAccounts: callCredits },
       },
     });
 
-    return { matured: processed, callCredits };
+    return { matured: processed, errors, callCredits };
   } catch (err) {
     await prisma.jobRun.update({
       where: { id: run.id },
