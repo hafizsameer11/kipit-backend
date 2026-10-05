@@ -1532,14 +1532,17 @@ adminResourcesRouter.get(
         id: c.id,
         name: c.name,
         channel: c.channel,
-        status: c.status === "sending" ? "scheduled" : c.status,
+        status: c.status,
         audience: c.audience,
-        reach: 0,
+        audienceId: c.audienceId ?? null,
+        reach: c.reach ?? 0,
         title: c.subject,
         content: c.body,
-        cta: "Open Kipit",
-        deepLink: "/invest",
+        cta: c.cta || "Open Kipit",
+        deepLink: c.deepLink || "/invest",
         scheduledFor: c.scheduledAt ?? undefined,
+        sentAt: c.sentAt ?? undefined,
+        delivered: c.delivered ?? 0,
         createdBy: "Admin",
       })),
     });
@@ -1553,10 +1556,13 @@ adminResourcesRouter.post(
     const body = z
       .object({
         name: z.string().min(1),
-        channel: z.string().default("push"),
+        channel: z.enum(["push", "email"]).default("push"),
         audience: z.string().default("All customers"),
+        audienceId: z.string().optional(),
         subject: z.string().min(1),
         body: z.string().min(1),
+        cta: z.string().optional(),
+        deepLink: z.string().optional(),
         status: z.enum(["draft", "scheduled", "sending", "sent", "paused"]).default("draft"),
         scheduledAt: z.string().nullable().optional(),
       })
@@ -1569,8 +1575,11 @@ adminResourcesRouter.post(
       channel: body.channel,
       status: body.status,
       audience: body.audience,
+      audienceId: body.audienceId ?? null,
       subject: body.subject,
       body: body.body,
+      cta: body.cta ?? "Open Kipit",
+      deepLink: body.deepLink ?? "/invest",
       scheduledAt: body.scheduledAt ?? null,
       createdAt: now,
       updatedAt: now,
@@ -1583,6 +1592,19 @@ adminResourcesRouter.post(
       entityType: "Campaign",
       entityId: row.id,
     });
+
+    // Due scheduled / send-now creates: deliver immediately.
+    const dueNow =
+      body.status === "sending" ||
+      (body.status === "scheduled" &&
+        (!body.scheduledAt || new Date(body.scheduledAt).getTime() <= Date.now() + 5_000));
+    if (dueNow && body.channel === "push") {
+      const { sendMarketingCampaign } = await import("../jobs/marketing-campaigns.js");
+      const result = await sendMarketingCampaign(row.id);
+      res.status(201).json({ data: { ...row, ...result, status: result.status } });
+      return;
+    }
+
     res.status(201).json({ data: row });
   }),
 );
@@ -1597,6 +1619,8 @@ adminResourcesRouter.patch(
         status: z.enum(["draft", "scheduled", "sending", "sent", "paused"]).optional(),
         subject: z.string().optional(),
         body: z.string().optional(),
+        cta: z.string().optional(),
+        deepLink: z.string().optional(),
         scheduledAt: z.string().nullable().optional(),
       })
       .parse(req.body);
@@ -1606,7 +1630,38 @@ adminResourcesRouter.patch(
     const row = { ...campaigns[idx]!, ...body, updatedAt: new Date().toISOString() };
     campaigns[idx] = row;
     await setConfigJson("admin.campaigns", campaigns, req.adminId);
+
+    if (body.status === "sending") {
+      const { sendMarketingCampaign } = await import("../jobs/marketing-campaigns.js");
+      const result = await sendMarketingCampaign(row.id);
+      res.json({ data: { ...row, status: result.status, delivered: result.delivered, reach: result.recipients } });
+      return;
+    }
+
     res.json({ data: row });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/campaigns/:id/send",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const { sendMarketingCampaign } = await import("../jobs/marketing-campaigns.js");
+    try {
+      const result = await sendMarketingCampaign(String(req.params.id));
+      await writeAudit({
+        actorAdminId: req.adminId,
+        action: "campaign.sent",
+        entityType: "Campaign",
+        entityId: result.id,
+        after: result,
+      });
+      res.json({ data: result });
+    } catch (err) {
+      const e = err as { status?: number; code?: string; message?: string };
+      if (e.status === 404) throw new AppError(404, "Campaign not found", "NOT_FOUND");
+      throw err;
+    }
   }),
 );
 

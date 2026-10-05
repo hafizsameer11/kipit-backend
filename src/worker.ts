@@ -2,6 +2,7 @@ import { runMaturityEngine } from "./jobs/maturity.js";
 import { runKycVerificationJob } from "./jobs/kyc-verify.js";
 import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import { runMarketingDigestJob } from "./jobs/marketing-digest.js";
+import { runDueMarketingCampaignsJob } from "./jobs/marketing-campaigns.js";
 import { runAutoInvestJob } from "./jobs/auto-invest.js";
 import { runGiftExpiryJob } from "./jobs/gift-expiry.js";
 import { runApplyRateChangesJob } from "./jobs/apply-rate-changes.js";
@@ -14,6 +15,7 @@ const DAY_MS = 24 * 60 * 60 * 1000;
 const KYC_INTERVAL_MS = 60_000;
 const MONNIFY_VA_INTERVAL_MS = 60_000;
 const DIGEST_CHECK_MS = 60_000;
+const CAMPAIGN_CHECK_MS = 60_000;
 const AUTO_INVEST_INTERVAL_MS = 60_000;
 const GIFT_EXPIRY_INTERVAL_MS = 60_000;
 const RATE_APPLY_INTERVAL_MS = 60_000;
@@ -71,6 +73,17 @@ async function tickDigest() {
     console.log("[worker] marketing digest ok", result);
   } catch (err) {
     console.error("[worker] marketing digest failed", err);
+  }
+}
+
+async function tickCampaigns() {
+  try {
+    const result = await runDueMarketingCampaignsJob();
+    if (result.checked > 0) {
+      console.log("[worker] marketing campaigns", result);
+    }
+  } catch (err) {
+    console.error("[worker] marketing campaigns failed", err);
   }
 }
 
@@ -159,7 +172,7 @@ async function main() {
   }
 
   console.log(
-    "kipit-worker started — maturity @00:00, digest @configured time, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s, wallet-recon every 15m",
+    "kipit-worker started — maturity @00:00, digest @configured time, campaigns every 60s, kyc-verify + monnify-va + auto-invest + gift-expiry + apply-rates every 60s, wallet-recon every 15m",
   );
 
   setTimeout(() => {
@@ -187,6 +200,9 @@ async function main() {
 
   void tickDigest();
   setInterval(() => void tickDigest(), DIGEST_CHECK_MS);
+
+  void tickCampaigns();
+  setInterval(() => void tickCampaigns(), CAMPAIGN_CHECK_MS);
 
   if (process.env.NODE_ENV !== "production") {
     console.log("[worker] scheduling first maturity run in 5s (dev)");
