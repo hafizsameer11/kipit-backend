@@ -100,7 +100,23 @@ adminRouter.post(
       throw new AppError(401, "Invalid credentials", "AUTH_FAILED");
     }
 
-    // MFA temporarily disabled — issue session on password alone.
+    // Authenticator TOTP when enrolled.
+    if (admin.totpEnabled && admin.totpSecretEnc) {
+      const mfaToken = jwt.sign(
+        { sub: admin.id, email: admin.email, typ: "admin_mfa", method: "totp" },
+        env.JWT_ACCESS_SECRET,
+        { expiresIn: "10m" },
+      );
+      return res.json({
+        data: {
+          mfaRequired: true,
+          mfaMethod: "totp",
+          mfaToken,
+          admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
+        },
+      });
+    }
+
     const session = await prisma.adminSession.create({
       data: { adminId: admin.id, refreshTokenHash: "admin" },
     });
@@ -129,6 +145,7 @@ adminRouter.post(
         mfaRequired: false,
         accessToken,
         admin: { id: admin.id, email: admin.email, name: admin.name, role: admin.role },
+        totpEnabled: admin.totpEnabled,
       },
     });
   }),
@@ -144,12 +161,13 @@ adminRouter.post(
       })
       .parse(req.body);
 
-    let payload: { sub?: string; typ?: string; email?: string };
+    let payload: { sub?: string; typ?: string; email?: string; method?: string };
     try {
       payload = jwt.verify(body.mfaToken, env.JWT_ACCESS_SECRET) as {
         sub?: string;
         typ?: string;
         email?: string;
+        method?: string;
       };
     } catch {
       throw new AppError(401, "MFA session expired. Sign in again.", "MFA_EXPIRED");
@@ -163,11 +181,27 @@ adminRouter.post(
     });
     if (!admin) throw new AppError(401, "Unauthorized", "UNAUTHORIZED");
 
-    await verifyOtp({
-      target: admin.email,
-      purpose: "ADMIN_LOGIN",
-      code: body.code.trim(),
-    });
+    if (payload.method === "totp" || (admin.totpEnabled && admin.totpSecretEnc)) {
+      if (!admin.totpSecretEnc) {
+        throw new AppError(400, "Authenticator is not set up for this account", "TOTP_MISSING");
+      }
+      const { decryptTotpSecret, verifyTotpCode } = await import("../services/admin-totp.js");
+      let secret: string;
+      try {
+        secret = decryptTotpSecret(admin.totpSecretEnc);
+      } catch {
+        throw new AppError(500, "Could not verify authenticator", "TOTP_CORRUPT");
+      }
+      if (!verifyTotpCode(secret, body.code.trim())) {
+        throw new AppError(401, "Invalid authenticator code", "TOTP_INVALID");
+      }
+    } else {
+      await verifyOtp({
+        target: admin.email,
+        purpose: "ADMIN_LOGIN",
+        code: body.code.trim(),
+      });
+    }
 
     const session = await prisma.adminSession.create({
       data: { adminId: admin.id, refreshTokenHash: "admin" },
@@ -198,18 +232,26 @@ adminRouter.post(
   "/login/otp/resend",
   asyncHandler(async (req, res) => {
     const body = z.object({ mfaToken: z.string().min(10) }).parse(req.body);
-    let payload: { sub?: string; typ?: string; email?: string };
+    let payload: { sub?: string; typ?: string; email?: string; method?: string };
     try {
       payload = jwt.verify(body.mfaToken, env.JWT_ACCESS_SECRET) as {
         sub?: string;
         typ?: string;
         email?: string;
+        method?: string;
       };
     } catch {
       throw new AppError(401, "MFA session expired. Sign in again.", "MFA_EXPIRED");
     }
     if (payload.typ !== "admin_mfa" || !payload.sub) {
       throw new AppError(401, "Invalid MFA token", "MFA_INVALID");
+    }
+    if (payload.method === "totp") {
+      throw new AppError(
+        400,
+        "Open Google Authenticator (or your authenticator app) for a new code — email resend is not used.",
+        "TOTP_NO_RESEND",
+      );
     }
     const admin = await prisma.adminUser.findFirst({
       where: { id: payload.sub, active: true },
@@ -2211,7 +2253,14 @@ adminRouter.post(
     if (!admin) throw new AppError(404, "Admin not found", "NOT_FOUND");
     await prisma.adminUser.update({
       where: { id: admin.id },
-      data: { pinHash: null, require2fa: true },
+      data: {
+        pinHash: null,
+        require2fa: true,
+        totpEnabled: false,
+        totpSecretEnc: null,
+        totpPendingEnc: null,
+        totpConfirmedAt: null,
+      },
     });
     await writeAudit({
       actorAdminId: req.adminId,
@@ -2268,6 +2317,7 @@ adminRouter.get(
         role: admin.role,
         phone: admin.phone,
         require2fa: admin.require2fa,
+        totpEnabled: admin.totpEnabled,
         makerChecker: admin.makerChecker,
         permissions,
         alertPrefs,
@@ -2352,6 +2402,128 @@ adminRouter.post(
       entityId: admin.id,
     });
     res.json({ data: { ok: true } });
+  }),
+);
+
+/** Start authenticator enrollment — returns otpauth URI + secret for Google Authenticator. */
+adminRouter.post(
+  "/me/2fa/setup",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    const {
+      generateTotpSecret,
+      encryptTotpSecret,
+      totpKeyUri,
+      formatTotpSecretDisplay,
+    } = await import("../services/admin-totp.js");
+    const secret = generateTotpSecret();
+    const otpauthUrl = totpKeyUri(admin.email, secret);
+    await prisma.adminUser.update({
+      where: { id: admin.id },
+      data: { totpPendingEnc: encryptTotpSecret(secret) },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "admin.2fa.setup_started",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+    res.json({
+      data: {
+        secret,
+        secretDisplay: formatTotpSecretDisplay(secret),
+        otpauthUrl,
+        issuer: "Kipit Admin",
+        account: admin.email,
+        replacing: admin.totpEnabled,
+      },
+    });
+  }),
+);
+
+/** Confirm enrollment with a 6-digit authenticator code. */
+adminRouter.post(
+  "/me/2fa/confirm",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z.object({ code: z.string().min(6).max(8) }).parse(req.body);
+    const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    if (!admin.totpPendingEnc) {
+      throw new AppError(400, "Start authenticator setup first", "TOTP_SETUP_REQUIRED");
+    }
+    const { decryptTotpSecret, verifyTotpCode, encryptTotpSecret } = await import(
+      "../services/admin-totp.js"
+    );
+    let secret: string;
+    try {
+      secret = decryptTotpSecret(admin.totpPendingEnc);
+    } catch {
+      throw new AppError(400, "Setup expired — start again", "TOTP_SETUP_INVALID");
+    }
+    if (!verifyTotpCode(secret, body.code.trim())) {
+      throw new AppError(401, "Invalid authenticator code", "TOTP_INVALID");
+    }
+    await prisma.adminUser.update({
+      where: { id: admin.id },
+      data: {
+        totpSecretEnc: encryptTotpSecret(secret),
+        totpPendingEnc: null,
+        totpEnabled: true,
+        totpConfirmedAt: new Date(),
+        require2fa: true,
+      },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "admin.2fa.enabled",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+    res.json({ data: { totpEnabled: true } });
+  }),
+);
+
+/** Disable authenticator — requires password + current code. */
+adminRouter.post(
+  "/me/2fa/disable",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        password: z.string().min(1),
+        code: z.string().min(6).max(8),
+      })
+      .parse(req.body);
+    const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    if (!(await verifySecret(body.password, admin.passwordHash))) {
+      throw new AppError(401, "Incorrect password", "PASSWORD_INVALID");
+    }
+    if (!admin.totpEnabled || !admin.totpSecretEnc) {
+      throw new AppError(400, "Authenticator is not enabled", "TOTP_NOT_ENABLED");
+    }
+    const { decryptTotpSecret, verifyTotpCode } = await import("../services/admin-totp.js");
+    const secret = decryptTotpSecret(admin.totpSecretEnc);
+    if (!verifyTotpCode(secret, body.code.trim())) {
+      throw new AppError(401, "Invalid authenticator code", "TOTP_INVALID");
+    }
+    await prisma.adminUser.update({
+      where: { id: admin.id },
+      data: {
+        totpEnabled: false,
+        totpSecretEnc: null,
+        totpPendingEnc: null,
+        totpConfirmedAt: null,
+        require2fa: false,
+      },
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "admin.2fa.disabled",
+      entityType: "AdminUser",
+      entityId: admin.id,
+    });
+    res.json({ data: { totpEnabled: false } });
   }),
 );
 
