@@ -76,6 +76,8 @@ function productLabelForBand(code: string, fallback: string) {
 investRouter.get(
   "/rates",
   asyncHandler(async (_req, res) => {
+    const { ensureRatesApplied } = await import("../services/rates.js");
+    await ensureRatesApplied();
     const bands = await prisma.rateBand.findMany({ orderBy: { minDays: "asc" } });
     res.json({
       data: bands.map((b) => ({

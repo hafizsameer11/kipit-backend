@@ -314,12 +314,16 @@ model RateChangeRequest {
   bandId        String
   band          RateBand         @relation(fields: [bandId], references: [id])
   proposedBps   Int
+  /** Live band rate at propose time (for display + premature-apply repair). */
+  previousBps   Int?
   effectiveFrom DateTime
   status        RateChangeStatus @default(PENDING)
   reason        String?
   makerAdminId  String
   checkerAdminId String?
   decidedAt     DateTime?
+  /** When the proposed rate was written onto RateBand (null = approved but not yet live). */
+  appliedAt     DateTime?
   createdAt     DateTime         @default(now())
 }
 
