@@ -101,13 +101,15 @@ investRouter.get(
     const call = await ensureUserCall(req.userId!);
     const callBand = await prisma.rateBand.findFirst({ where: { code: "CALL" } });
     const rateBps = callBand?.rateBps ?? 1450;
+    const { getOpsLimits } = await import("../services/system-settings.js");
+    const ops = await getOpsLimits();
     res.json({
       data: {
         balance: koboToNaira(call.balanceKobo),
         balanceKobo: call.balanceKobo.toString(),
         rateBps,
         ratePct: rateBps / 100,
-        minimum: 1000,
+        minimum: ops.minCallDeposit,
         liquidity: "Withdraw anytime",
       },
     });
@@ -127,6 +129,15 @@ investRouter.post(
       })
       .parse(req.body);
     await verifyTransactionPin(req.userId!, body.pin);
+    const { getOpsLimits } = await import("../services/system-settings.js");
+    const ops = await getOpsLimits();
+    if (body.amount < ops.minCallDeposit) {
+      throw new AppError(
+        400,
+        `Minimum Call Account deposit is ₦${ops.minCallDeposit.toLocaleString("en-NG")}`,
+        "BELOW_MINIMUM",
+      );
+    }
     await moveWalletToCall(req.userId!, nairaToKobo(body.amount), body.idempotencyKey);
     const call = await ensureUserCall(req.userId!);
     const { createUserNotification } = await import("../services/notify.js");
@@ -227,6 +238,15 @@ investRouter.post(
       .parse(req.body);
 
     await verifyTransactionPin(req.userId!, body.pin);
+    const { getOpsLimits } = await import("../services/system-settings.js");
+    const ops = await getOpsLimits();
+    if (body.amount < ops.minFixedPlacement) {
+      throw new AppError(
+        400,
+        `Minimum fixed placement is ₦${ops.minFixedPlacement.toLocaleString("en-NG")}`,
+        "BELOW_MINIMUM",
+      );
+    }
     const bands = await prisma.rateBand.findMany();
     const band = rateForTenorDays(body.tenorDays, bands);
     const amountKobo = nairaToKobo(body.amount);
