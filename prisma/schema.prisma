@@ -649,6 +649,12 @@ model AdminUser {
   phone         String?
   invitePending Boolean   @default(false)
   require2fa    Boolean   @default(false)
+  /** AES-GCM encrypted TOTP secret (confirmed). */
+  totpSecretEnc String?
+  /** Pending enroll secret until the operator confirms a code. */
+  totpPendingEnc String?
+  totpEnabled   Boolean   @default(false)
+  totpConfirmedAt DateTime?
   makerChecker  Boolean   @default(false)
   active        Boolean   @default(true)
   createdAt     DateTime  @default(now())
