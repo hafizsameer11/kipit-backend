@@ -121,9 +121,12 @@ export type SystemSupportContacts = {
   email: string;
 };
 
-/** Public-safe slice of system settings (no fees/limits). */
+/** Public-safe slice of system settings for the customer apps. */
 export async function getPublicAppConfig() {
   const settings = await getConfig("system.settings", DEFAULT_SETTINGS);
+  const { getOpsLimits } = await import(
+    "../services/system-settings.js"
+  );
   const support = {
     ...DEFAULT_SETTINGS.support,
     ...(settings as { support?: Partial<SystemSupportContacts> }).support,
@@ -142,6 +145,7 @@ export async function getPublicAppConfig() {
     if (hit && typeof hit.enabled === "boolean") return hit.enabled;
     return DEFAULT_SETTINGS.flags.find((f) => f.id === id)?.enabled ?? true;
   };
+  const ops = await getOpsLimits();
   return {
     support: {
       phone: String(support.phone || "").trim(),
@@ -157,6 +161,17 @@ export async function getPublicAppConfig() {
       autoInvest: flagOn("ff-auto"),
       giftInvest: flagOn("ff-gift"),
       explore: flagOn("ff-explore"),
+    },
+    limits: {
+      tier1DailyWithdrawal: ops.tier1DailyWithdrawal,
+      tier2DailyWithdrawal: ops.tier2DailyWithdrawal,
+      singlePayoutMax: ops.singlePayoutMax,
+      minFixedPlacement: ops.minFixedPlacement,
+      minCallDeposit: ops.minCallDeposit,
+    },
+    fees: {
+      withdrawal: ops.withdrawalFee,
+      cardFundingPct: ops.cardFundingPct,
     },
   };
 }
@@ -409,17 +424,25 @@ adminConsoleRouter.get(
   "/settings",
   asyncHandler(async (_req, res) => {
     const settings = await getConfig("system.settings", DEFAULT_SETTINGS);
+    const { mergeSettingRows, DEFAULT_FEES, DEFAULT_LIMITS, DEFAULT_CUTOFFS } = await import(
+      "../services/system-settings.js"
+    );
+    const stored = settings as typeof DEFAULT_SETTINGS;
     res.json({
       data: {
         ...DEFAULT_SETTINGS,
-        ...settings,
+        ...stored,
+        fees: mergeSettingRows(DEFAULT_FEES, stored.fees ?? DEFAULT_SETTINGS.fees),
+        limits: mergeSettingRows(DEFAULT_LIMITS, stored.limits ?? DEFAULT_SETTINGS.limits),
+        cutoffs: mergeSettingRows(DEFAULT_CUTOFFS, stored.cutoffs ?? DEFAULT_SETTINGS.cutoffs),
+        flags: mergeSettingsFlags(undefined, stored.flags),
         support: {
           ...DEFAULT_SETTINGS.support,
-          ...(settings as { support?: Partial<SystemSupportContacts> }).support,
+          ...(stored as { support?: Partial<SystemSupportContacts> }).support,
         },
         maintenance: {
           ...DEFAULT_SETTINGS.maintenance,
-          ...(settings as { maintenance?: object }).maintenance,
+          ...(stored as { maintenance?: object }).maintenance,
         },
       },
     });
@@ -471,10 +494,19 @@ adminConsoleRouter.put(
     assertNonNegativeNumericRows(body.fees, "Fees");
     assertNonNegativeNumericRows(body.limits, "Limits");
     assertCutoffTimes(body.cutoffs);
+    const { mergeSettingRows, DEFAULT_FEES, DEFAULT_LIMITS, DEFAULT_CUTOFFS } = await import(
+      "../services/system-settings.js"
+    );
     const next = {
-      fees: body.fees ?? current.fees,
-      limits: body.limits ?? current.limits,
-      cutoffs: body.cutoffs ?? current.cutoffs,
+      fees: mergeSettingRows(DEFAULT_FEES, body.fees ?? (current as { fees?: typeof DEFAULT_FEES }).fees),
+      limits: mergeSettingRows(
+        DEFAULT_LIMITS,
+        body.limits ?? (current as { limits?: typeof DEFAULT_LIMITS }).limits,
+      ),
+      cutoffs: mergeSettingRows(
+        DEFAULT_CUTOFFS,
+        body.cutoffs ?? (current as { cutoffs?: typeof DEFAULT_CUTOFFS }).cutoffs,
+      ),
       flags: mergeSettingsFlags(body.flags, (current as { flags?: typeof DEFAULT_SETTINGS.flags }).flags),
       maintenance: body.maintenance ?? current.maintenance,
       support: nextSupport,

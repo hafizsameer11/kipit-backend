@@ -271,6 +271,36 @@ withdrawRouter.post(
 
     if (body.amount < 1000) throw new AppError(400, "Minimum withdrawal is ₦1,000", "BELOW_MINIMUM");
 
+    const { getOpsLimits } = await import("../services/system-settings.js");
+    const ops = await getOpsLimits();
+    if (body.amount > ops.singlePayoutMax) {
+      throw new AppError(
+        400,
+        `Single payout maximum is ₦${ops.singlePayoutMax.toLocaleString("en-NG")}`,
+        "ABOVE_SINGLE_LIMIT",
+      );
+    }
+
+    const startOfDay = new Date();
+    startOfDay.setHours(0, 0, 0, 0);
+    const todays = await prisma.withdrawalRequest.findMany({
+      where: {
+        userId: req.userId!,
+        createdAt: { gte: startOfDay },
+        status: { not: "DECLINED" },
+      },
+      select: { amountKobo: true },
+    });
+    const todaysNaira = todays.reduce((sum, w) => sum + koboToNaira(w.amountKobo), 0);
+    const dailyCap = ops.tier2DailyWithdrawal;
+    if (todaysNaira + body.amount > dailyCap) {
+      throw new AppError(
+        400,
+        `Daily withdrawal limit is ₦${dailyCap.toLocaleString("en-NG")}. You've used ₦${todaysNaira.toLocaleString("en-NG")} today.`,
+        "ABOVE_DAILY_LIMIT",
+      );
+    }
+
     await verifyTransactionPin(req.userId!, body.pin);
 
     const bank = await prisma.payoutBank.findFirst({
