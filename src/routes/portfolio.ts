@@ -169,8 +169,9 @@ portfolioRouter.get(
   "/transactions",
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
+    // Customer history is wallet + Call only — placement-side funding legs stay off the list.
     const accounts = await prisma.ledgerAccount.findMany({
-      where: { userId: req.userId! },
+      where: { userId: req.userId!, type: { in: ["USER_WALLET", "USER_CALL"] } },
       select: { id: true, type: true },
     });
     const ids = accounts.map((a) => a.id);
@@ -204,15 +205,33 @@ portfolioRouter.get(
 
     const rows = [...byEntry.values()]
       .sort((a, b) => b.entry.createdAt.getTime() - a.entry.createdAt.getTime())
+      .filter((l) => {
+        // Hide legacy "maturity interest funding" rows that used to sit next to the full payout.
+        const kind = String(l.entry.kind || "").toUpperCase();
+        const desc = String(l.entry.description || "");
+        if (kind === "INTEREST" && /maturity\s*interest/i.test(desc)) return false;
+        return true;
+      })
       .slice(0, 100)
       .map((l) => {
         const abs =
           l.amountKobo < 0n ? -l.amountKobo : l.amountKobo;
+        const kind = String(l.entry.kind || "").toUpperCase();
+        let description = l.entry.description ?? l.entry.kind;
+        // Normalize maturity labels to one clear customer-facing title.
+        if (kind.includes("MATURITY")) {
+          const name = String(l.entry.description || "")
+            .replace(/^(Early\s+)?Maturity(\s+payout)?\s*[:·-]\s*/i, "")
+            .replace(/^Maturity interest funding\s*[:·-]?\s*/i, "")
+            .replace(/\(full profit\)\s*/i, "")
+            .trim();
+          description = name ? `Maturity payout · ${name}` : "Maturity payout";
+        }
         return {
           id: l.entry.id,
           reference: l.entry.reference,
           kind: l.entry.kind,
-          description: l.entry.description ?? l.entry.kind,
+          description,
           amount: koboToNaira(abs),
           // Positive ledger amount on a user asset account = money in.
           direction: l.amountKobo >= 0n ? ("credit" as const) : ("debit" as const),

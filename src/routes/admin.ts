@@ -611,16 +611,35 @@ adminRouter.get(
     }
     const rows = [...byEntry.values()]
       .sort((a, b) => b.entry.createdAt.getTime() - a.entry.createdAt.getTime())
+      .filter((line) => {
+        const kind = String(line.entry.kind || "").toUpperCase();
+        const desc = String(line.entry.description || "");
+        // Placement-only / legacy maturity-interest legs — payout row already has full amount.
+        if (kind === "INTEREST" && /maturity\s*interest/i.test(desc)) return false;
+        if (line.account.type === "USER_PLACEMENT" && kind.includes("MATURITY")) return false;
+        return true;
+      })
       .slice(0, 100)
-      .map((line) => ({
-        id: line.entry.id,
-        reference: line.entry.reference,
-        kind: line.entry.kind,
-        amount: koboToNaira(line.amountKobo < 0n ? -line.amountKobo : line.amountKobo),
-        direction: line.amountKobo < 0n ? "debit" : "credit",
-        createdAt: line.entry.createdAt,
-        description: line.entry.description,
-      }));
+      .map((line) => {
+        const kind = String(line.entry.kind || "").toUpperCase();
+        let description = line.entry.description;
+        if (kind.includes("MATURITY")) {
+          const name = String(line.entry.description || "")
+            .replace(/^(Early\s+)?Maturity(\s+payout)?\s*[:·-]\s*/i, "")
+            .replace(/\(full profit\)\s*/i, "")
+            .trim();
+          description = name ? `Maturity payout · ${name}` : "Maturity payout";
+        }
+        return {
+          id: line.entry.id,
+          reference: line.entry.reference,
+          kind: line.entry.kind,
+          amount: koboToNaira(line.amountKobo < 0n ? -line.amountKobo : line.amountKobo),
+          direction: line.amountKobo < 0n ? "debit" : "credit",
+          createdAt: line.entry.createdAt,
+          description,
+        };
+      });
     res.json({ data: rows });
   }),
 );
