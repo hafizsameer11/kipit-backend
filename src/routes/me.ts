@@ -63,6 +63,7 @@ meRouter.get(
         interestThisWeek: interestWeek.interestThisWeek,
         interestToday: interestWeek.interestToday,
         interestWeekSeries: interestWeek.interestWeekSeries,
+        interestWeekLabels: interestWeek.interestWeekLabels,
         nextMaturity: next?.maturityDate
           ? {
               id: next.id,
