@@ -55,9 +55,8 @@ export async function maturePlacement(input: {
   );
 
   const payoutKey = early ? `early-maturity-${placement.id}` : `maturity-${placement.id}`;
-  const payoutDesc = early
-    ? `Early maturity: ${placement.name}`
-    : `Maturity: ${placement.name}`;
+  // One customer-facing title for scheduled and early settle (full principal + interest).
+  const payoutDesc = `Maturity payout · ${placement.name}`;
 
   const toCall =
     placement.maturityInstruction === "PAYOUT" ||
