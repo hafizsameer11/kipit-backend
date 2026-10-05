@@ -323,6 +323,8 @@ withdrawRouter.post(
     });
 
     const reference = makeReference("WDR");
+    const { withdrawalSettleOn } = await import("../services/system-settings.js");
+    const settlement = await withdrawalSettleOn();
     const row = await prisma.withdrawalRequest.create({
       data: {
         userId: req.userId!,
@@ -335,14 +337,17 @@ withdrawRouter.post(
 
     const { notifyCustomer, sendOpsWithdrawalAlert } = await import("../services/notify.js");
     const customer = await prisma.user.findUnique({ where: { id: req.userId! } });
+    const settleNote = settlement.sameDay
+      ? `Same-day batch (cut-off ${settlement.cutoff} Lagos)`
+      : `After ${settlement.cutoff} Lagos cut-off — settles ${settlement.settleOn}`;
     await notifyCustomer({
       userId: req.userId!,
       title: "Withdrawal processing",
-      body: `Your withdrawal of ₦${body.amount.toLocaleString()} is being processed.`,
+      body: `Your withdrawal of ₦${body.amount.toLocaleString()} is being processed. ${settleNote}.`,
       href: "/withdraw/tracker",
       emailKind: "withdrawal",
       amountNaira: body.amount,
-      emailDetail: `Reference ${reference}`,
+      emailDetail: `Reference ${reference}. ${settleNote}`,
     }).catch(() => undefined);
     if (customer) {
       await sendOpsWithdrawalAlert({
@@ -359,6 +364,7 @@ withdrawRouter.post(
       action: "withdrawal.create",
       entityType: "WithdrawalRequest",
       entityId: row.id,
+      after: settlement,
     });
 
     res.status(201).json({
@@ -367,6 +373,9 @@ withdrawRouter.post(
         reference: row.reference,
         status: row.status,
         amount: body.amount,
+        settleOn: settlement.settleOn,
+        sameDaySettlement: settlement.sameDay,
+        payoutCutoff: settlement.cutoff,
       },
     });
   }),
@@ -381,17 +390,24 @@ withdrawRouter.get(
       include: { payoutBank: true },
       orderBy: { createdAt: "desc" },
     });
+    const { getOpsCutoffs, settleOnFromCutoff } = await import("../services/system-settings.js");
+    const { payoutBatch } = await getOpsCutoffs();
     res.json({
-      data: rows.map((r) => ({
-        id: r.id,
-        reference: r.reference,
-        status: r.status,
-        amount: koboToNaira(r.amountKobo),
-        bankName: r.payoutBank.bankName,
-        accountNumber: r.payoutBank.accountNumber,
-        declineReason: r.declineReason,
-        createdAt: r.createdAt,
-      })),
+      data: rows.map((r) => {
+        const settlement = settleOnFromCutoff(r.createdAt, payoutBatch);
+        return {
+          id: r.id,
+          reference: r.reference,
+          status: r.status,
+          amount: koboToNaira(r.amountKobo),
+          bankName: r.payoutBank.bankName,
+          accountNumber: r.payoutBank.accountNumber,
+          declineReason: r.declineReason,
+          createdAt: r.createdAt,
+          settleOn: settlement.settleOn,
+          sameDaySettlement: settlement.sameDay,
+        };
+      }),
     });
   }),
 );
@@ -405,6 +421,8 @@ withdrawRouter.get(
       include: { payoutBank: true },
     });
     if (!row) throw new AppError(404, "Withdrawal not found", "NOT_FOUND");
+    const { withdrawalSettleOn } = await import("../services/system-settings.js");
+    const settlement = await withdrawalSettleOn(row.createdAt);
     res.json({
       data: {
         id: row.id,
@@ -417,6 +435,9 @@ withdrawRouter.get(
         declineReason: row.declineReason,
         createdAt: row.createdAt,
         processedAt: row.processedAt,
+        settleOn: settlement.settleOn,
+        sameDaySettlement: settlement.sameDay,
+        payoutCutoff: settlement.cutoff,
       },
     });
   }),

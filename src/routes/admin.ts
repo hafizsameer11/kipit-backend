@@ -1017,27 +1017,39 @@ adminRouter.get(
       orderBy: { createdAt: "desc" },
       take: 100,
     });
+    const { getOpsCutoffs, settleOnFromCutoff, lagosDateKey } = await import(
+      "../services/system-settings.js"
+    );
+    const { payoutBatch } = await getOpsCutoffs();
+    const today = lagosDateKey();
     res.json({
-      data: rows.map((r) => ({
-        id: r.id,
-        reference: r.reference,
-        status: r.status,
-        amount: koboToNaira(r.amountKobo),
-        declineReason: r.declineReason,
-        user: {
-          id: r.userId,
-          name: `${r.user.firstName} ${r.user.surname}`,
-          email: r.user.email,
-          phone: r.user.phone,
-          kycTier: r.user.kycTier,
-          createdAt: r.user.createdAt,
-        },
-        bank: r.payoutBank.bankName,
-        accountName: r.payoutBank.accountName,
-        accountNumber: r.payoutBank.accountNumber,
-        createdAt: r.createdAt,
-        processedAt: r.processedAt,
-      })),
+      data: rows.map((r) => {
+        const settlement = settleOnFromCutoff(r.createdAt, payoutBatch);
+        return {
+          id: r.id,
+          reference: r.reference,
+          status: r.status,
+          amount: koboToNaira(r.amountKobo),
+          declineReason: r.declineReason,
+          user: {
+            id: r.userId,
+            name: `${r.user.firstName} ${r.user.surname}`,
+            email: r.user.email,
+            phone: r.user.phone,
+            kycTier: r.user.kycTier,
+            createdAt: r.user.createdAt,
+          },
+          bank: r.payoutBank.bankName,
+          accountName: r.payoutBank.accountName,
+          accountNumber: r.payoutBank.accountNumber,
+          createdAt: r.createdAt,
+          processedAt: r.processedAt,
+          settleOn: settlement.settleOn,
+          sameDaySettlement: settlement.sameDay,
+          payoutCutoff: settlement.cutoff,
+          batchReady: settlement.settleOn <= today,
+        };
+      }),
     });
   }),
 );
@@ -1051,6 +1063,21 @@ adminRouter.post(
       include: { payoutBank: true },
     });
     if (row.status !== "PROCESSING") throw new AppError(400, "Not processing", "INVALID_STATE");
+
+    const force = String(req.query.force ?? "") === "1" || String(req.query.force ?? "") === "true";
+    const { settleOnFromCutoff, getOpsCutoffs, lagosDateKey } = await import(
+      "../services/system-settings.js"
+    );
+    const { payoutBatch } = await getOpsCutoffs();
+    const settlement = settleOnFromCutoff(row.createdAt, payoutBatch);
+    const today = lagosDateKey();
+    if (!force && settlement.settleOn > today) {
+      throw new AppError(
+        400,
+        `This withdrawal is in the next-day batch (cut-off ${settlement.cutoff} Lagos). Settles on ${settlement.settleOn}. Pass ?force=1 to override.`,
+        "BATCH_NOT_READY",
+      );
+    }
 
     const { initiatePaystackTransfer } = await import("../services/payments/paystack.js");
     const transfer = await initiatePaystackTransfer({
@@ -1086,9 +1113,9 @@ adminRouter.post(
       action: "withdrawal.successful",
       entityType: "WithdrawalRequest",
       entityId: row.id,
-      after: { transfer },
+      after: { transfer, settlement, forced: force },
     });
-    res.json({ data: { id: row.id, status: "SUCCESSFUL", transfer } });
+    res.json({ data: { id: row.id, status: "SUCCESSFUL", transfer, settleOn: settlement.settleOn } });
   }),
 );
 

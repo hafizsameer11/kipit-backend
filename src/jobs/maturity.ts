@@ -33,6 +33,20 @@ export async function runMaturityEngine() {
     }
 
     // Daily call interest — credit Call Account so it compounds (product: daily on Call).
+    // Value-date cut-off: CALL_DEPOSIT credits after yesterday's value cut-off are excluded
+    // until the next accrual day (interest starts same day only if funded before cut-off).
+    const {
+      getOpsCutoffs,
+      lagosDateKey,
+      lagosHmOnDateUtc,
+    } = await import("../services/system-settings.js");
+    // previousLagosDateKey via nextLagosDateKey inverse
+    const todayKey = lagosDateKey();
+    const [y, mo, d] = todayKey.split("-").map(Number);
+    const yesterdayKey = new Date(Date.UTC(y!, mo! - 1, d! - 1)).toISOString().slice(0, 10);
+    const { valueDate: valueCutoffHm } = await getOpsCutoffs();
+    const valueCutoffAt = lagosHmOnDateUtc(yesterdayKey, valueCutoffHm);
+
     const callBand = await prisma.rateBand.findFirst({ where: { code: "CALL" } });
     const rateBps = callBand?.rateBps ?? 1450;
     const callAccounts = await prisma.ledgerAccount.findMany({
@@ -42,7 +56,19 @@ export async function runMaturityEngine() {
     let callCredits = 0;
     for (const acct of callAccounts) {
       if (!acct.userId) continue;
-      const daily = interestForPeriod(acct.balanceKobo, rateBps, 1);
+      const postCutoff = await prisma.journalLine.aggregate({
+        where: {
+          accountId: acct.id,
+          amountKobo: { gt: 0 },
+          createdAt: { gte: valueCutoffAt },
+          entry: { kind: "CALL_DEPOSIT" },
+        },
+        _sum: { amountKobo: true },
+      });
+      const ineligible = postCutoff._sum.amountKobo ?? 0n;
+      const eligible =
+        acct.balanceKobo > ineligible ? acct.balanceKobo - ineligible : 0n;
+      const daily = interestForPeriod(eligible, rateBps, 1);
       if (daily <= 0n) continue;
       await creditCallFrom({
         userId: acct.userId,
