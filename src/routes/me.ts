@@ -7,7 +7,7 @@ import { publicUser } from "../services/auth.js";
 import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { koboToNaira } from "../lib/crypto.js";
 import { recordFeedImpressions } from "../services/feed-impressions.js";
-import { callInterestThisWeek } from "../lib/call-interest-week.js";
+import { portfolioInterestThisWeek } from "../lib/call-interest-week.js";
 
 export const meRouter = Router();
 
@@ -36,7 +36,7 @@ meRouter.get(
       feed.map((card) => card.id),
     ).catch(() => undefined);
 
-    const interestWeek = await callInterestThisWeek(call.id);
+    const interestWeek = await portfolioInterestThisWeek(user.id);
 
     res.json({
       data: {
@@ -60,8 +60,10 @@ meRouter.get(
           balance: koboToNaira(total),
           balanceKobo: total.toString(),
         },
+        // Overall portfolio interest (Call daily + maturity interest), last 7 Lagos days.
         interestThisWeek: interestWeek.interestThisWeek,
         interestToday: interestWeek.interestToday,
+        callInterestToday: interestWeek.callInterestToday,
         interestWeekSeries: interestWeek.interestWeekSeries,
         interestWeekLabels: interestWeek.interestWeekLabels,
         nextMaturity: next?.maturityDate
