@@ -895,6 +895,8 @@ adminConsoleRouter.get(
 adminConsoleRouter.put(
   "/role-permissions",
   asyncHandler(async (req: AdminRequest, res) => {
+    const { assertAdminPermission } = await import("../services/admin-permissions.js");
+    await assertAdminPermission(req.adminRole, "role.manage");
     const body = z.record(z.string(), z.array(z.string())).parse(req.body);
     await setConfig("admin.rolePermissions", body, req.adminId);
     await writeAudit({

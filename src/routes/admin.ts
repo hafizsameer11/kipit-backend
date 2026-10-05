@@ -14,6 +14,7 @@ import { adminReviewKyc, getKycStatus } from "../services/kyc.js";
 import { writeAudit } from "../services/audit.js";
 import {
   requireAdmin,
+  requirePermission,
   canViewAum,
   type AdminRequest,
 } from "../middleware/admin.js";
@@ -1300,6 +1301,7 @@ adminRouter.get(
 adminRouter.post(
   "/rates/propose",
   requireAdmin,
+  requirePermission("rate.propose"),
   asyncHandler(async (req: AdminRequest, res) => {
     const body = z
       .object({
@@ -1343,6 +1345,7 @@ adminRouter.post(
 adminRouter.post(
   "/rates/:requestId/decide",
   requireAdmin,
+  requirePermission("rate.approve"),
   asyncHandler(async (req: AdminRequest, res) => {
     const body = z.object({ approve: z.boolean() }).parse(req.body);
     const row = await prisma.rateChangeRequest.findUniqueOrThrow({
@@ -1741,6 +1744,7 @@ adminRouter.get(
 adminRouter.post(
   "/products",
   requireAdmin,
+  requirePermission("product.manage"),
   asyncHandler(async (req: AdminRequest, res) => {
     const body = z
       .object({
@@ -1828,6 +1832,7 @@ adminRouter.post(
 adminRouter.patch(
   "/products/:id",
   requireAdmin,
+  requirePermission("product.manage"),
   asyncHandler(async (req: AdminRequest, res) => {
     const body = z
       .object({
@@ -2194,6 +2199,8 @@ adminRouter.get(
   requireAdmin,
   asyncHandler(async (req: AdminRequest, res) => {
     const admin = await prisma.adminUser.findUniqueOrThrow({ where: { id: req.adminId! } });
+    const { permissionsForRole } = await import("../services/admin-permissions.js");
+    const permissions = await permissionsForRole(admin.role);
     res.json({
       data: {
         id: admin.id,
@@ -2203,6 +2210,7 @@ adminRouter.get(
         phone: admin.phone,
         require2fa: admin.require2fa,
         makerChecker: admin.makerChecker,
+        permissions,
       },
     });
   }),

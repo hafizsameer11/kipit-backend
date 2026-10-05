@@ -643,6 +643,8 @@ adminResourcesRouter.post(
   "/products/attachments",
   requireAdmin,
   asyncHandler(async (req: AdminRequest, res) => {
+    const { assertAdminPermission } = await import("../services/admin-permissions.js");
+    await assertAdminPermission(req.adminRole, "product.manage");
     const body = z
       .object({
         contentType: z.string().min(3).max(100),
@@ -710,6 +712,8 @@ adminResourcesRouter.post(
   "/products",
   requireAdmin,
   asyncHandler(async (req: AdminRequest, res) => {
+    const { assertAdminPermission } = await import("../services/admin-permissions.js");
+    await assertAdminPermission(req.adminRole, "product.manage");
     const body = z
       .object({
         categoryId: z.string().optional(),
@@ -798,6 +802,8 @@ adminResourcesRouter.patch(
   "/products/:id",
   requireAdmin,
   asyncHandler(async (req: AdminRequest, res) => {
+    const { assertAdminPermission } = await import("../services/admin-permissions.js");
+    await assertAdminPermission(req.adminRole, "product.manage");
     const body = z
       .object({
         name: z.string().optional(),
