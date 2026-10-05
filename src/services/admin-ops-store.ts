@@ -32,9 +32,16 @@ export type StoredCampaign = {
   channel: string;
   status: "draft" | "scheduled" | "sending" | "sent" | "paused";
   audience: string;
+  /** Segment id when known (seg-all, seg-active, …). */
+  audienceId?: string | null;
   subject: string;
   body: string;
+  cta?: string | null;
+  deepLink?: string | null;
   scheduledAt?: string | null;
+  sentAt?: string | null;
+  reach?: number;
+  delivered?: number;
   createdAt: string;
   updatedAt: string;
 };
