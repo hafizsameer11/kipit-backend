@@ -106,7 +106,12 @@ const DEFAULT_SETTINGS = {
       audience: "Tier 1 and above",
     },
   ],
-  maintenance: { enabled: false, message: "Kipit is under maintenance. Please try again shortly." },
+  maintenance: {
+    enabled: false,
+    message: "Kipit is under maintenance. Please try again shortly.",
+    windowStart: null as string | null,
+    windowEnd: null as string | null,
+  },
   support: {
     phone: "+2347000547480",
     /** Digits with country code, no + or spaces — used to build https://wa.me/{whatsapp} */
@@ -131,10 +136,6 @@ export async function getPublicAppConfig() {
     ...DEFAULT_SETTINGS.support,
     ...(settings as { support?: Partial<SystemSupportContacts> }).support,
   };
-  const maintenance = {
-    ...DEFAULT_SETTINGS.maintenance,
-    ...(settings as { maintenance?: { enabled?: boolean; message?: string } }).maintenance,
-  };
   const storedFlags =
     (settings as { flags?: { id: string; enabled?: boolean; label?: string; description?: string; audience?: string }[] })
       .flags ?? [];
@@ -147,6 +148,8 @@ export async function getPublicAppConfig() {
   };
   const ops = await getOpsLimits();
   const cutoffs = await getOpsCutoffs();
+  const { readMaintenanceState } = await import("../services/app-access.js");
+  const maintenanceState = await readMaintenanceState();
   return {
     support: {
       phone: String(support.phone || "").trim(),
@@ -154,8 +157,10 @@ export async function getPublicAppConfig() {
       email: String(support.email || "").trim(),
     },
     maintenance: {
-      enabled: Boolean(maintenance.enabled),
-      message: String(maintenance.message || DEFAULT_SETTINGS.maintenance.message),
+      enabled: maintenanceState.enabled,
+      message: maintenanceState.message,
+      windowStart: maintenanceState.windowStart,
+      windowEnd: maintenanceState.windowEnd,
     },
     featureFlags: {
       askAi: flagOn("ff-ai"),
@@ -475,7 +480,14 @@ adminConsoleRouter.put(
             }),
           )
           .optional(),
-        maintenance: z.object({ enabled: z.boolean(), message: z.string() }).optional(),
+        maintenance: z
+          .object({
+            enabled: z.boolean(),
+            message: z.string(),
+            windowStart: z.string().nullable().optional(),
+            windowEnd: z.string().nullable().optional(),
+          })
+          .optional(),
         support: z
           .object({
             phone: z.string().max(32).optional(),
@@ -515,9 +527,34 @@ adminConsoleRouter.put(
         body.cutoffs ?? (current as { cutoffs?: typeof DEFAULT_CUTOFFS }).cutoffs,
       ),
       flags: mergeSettingsFlags(body.flags, (current as { flags?: typeof DEFAULT_SETTINGS.flags }).flags),
-      maintenance: body.maintenance ?? current.maintenance,
+      maintenance: body.maintenance
+        ? {
+            enabled: body.maintenance.enabled,
+            message: body.maintenance.message,
+            windowStart:
+              body.maintenance.windowStart === undefined
+                ? (current as { maintenance?: { windowStart?: string | null } }).maintenance?.windowStart ??
+                  null
+                : body.maintenance.windowStart,
+            windowEnd:
+              body.maintenance.windowEnd === undefined
+                ? (current as { maintenance?: { windowEnd?: string | null } }).maintenance?.windowEnd ?? null
+                : body.maintenance.windowEnd,
+          }
+        : (current as { maintenance?: typeof DEFAULT_SETTINGS.maintenance }).maintenance ??
+          DEFAULT_SETTINGS.maintenance,
       support: nextSupport,
     };
+    if (next.maintenance.windowStart && next.maintenance.windowEnd) {
+      const start = Date.parse(next.maintenance.windowStart);
+      const end = Date.parse(next.maintenance.windowEnd);
+      if (!Number.isFinite(start) || !Number.isFinite(end)) {
+        throw new AppError(400, "Maintenance window must be valid date/times", "INVALID_SETTING");
+      }
+      if (end < start) {
+        throw new AppError(400, "Maintenance end must be after start", "INVALID_SETTING");
+      }
+    }
     await setConfig("system.settings", next, req.adminId);
     await writeAudit({
       actorAdminId: req.adminId,
