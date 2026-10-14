@@ -377,6 +377,704 @@ erDiagram
 
 ---
 
+## Table catalog (every table)
+
+Each table below: **what it stores**, **columns**, **keys**, **relations**.
+
+### `User`
+
+Customer account. Hub for almost every other customer table.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | cuid |
+| `email` | String? unique | Login |
+| `phone` | String? unique | Login / OTP |
+| `passwordHash` | String? | Null until password set |
+| `firstName` | String | |
+| `middleName` | String? | |
+| `surname` | String | |
+| `accountType` | AccountType | `PERSONAL` (default) or `BUSINESS` |
+| `businessName` | String? | Business accounts |
+| `businessRcNumber` | String? | CAC / RC |
+| `onboardedByAdminId` | String? | Loose admin id |
+| `dateOfBirth` | DateTime? | |
+| `gender` | String? | |
+| `occupation` | String? | |
+| `employmentStatus` | String? | |
+| `sourceOfFunds` | String? | |
+| `addressStreet` | String? | |
+| `addressCity` | String? | |
+| `addressState` | String? | |
+| `addressLga` | String? | |
+| `addressPending` | Boolean | Address change awaiting proof |
+| `referralCode` | String unique | Their invite code |
+| `referredBy` | String? | Other user’s `referralCode` (not FK) |
+| `kycTier` | KycTier | Cached `TIER_0` / `_1` / `_2` |
+| `pinHash` | String? | Transaction PIN |
+| `biometricsLogin` | Boolean | |
+| `biometricsTxn` | Boolean | |
+| `failedLoginCount` | Int | |
+| `lockedUntil` | DateTime? | Login lockout |
+| `frozen` | Boolean | Admin freeze |
+| `frozenReason` | String? | |
+| `monnifyAccountNo` | String? | Virtual NUBAN |
+| `monnifyBankName` | String? | |
+| `createdAt` / `updatedAt` | DateTime | |
+
+**Relations (1 → many unless noted):** `Session`, `OtpChallenge`, `LedgerAccount`, `AuditEvent`, `ConsentAcceptance`, `KycProfile` (0..1), `Placement`, `PayoutBank`, `CardToken`, `WithdrawalRequest`, `PaymentIntent`, `Gift` sent/received, `Notification`, `SupportTicket`, `ChatSession`, `AutoInvestRule`, `NotificationPref` (0..1), `PushDevice`, `FeedCardView`.
+
+---
+
+### `Session`
+
+Refresh-token login on a device.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `refreshTokenHash` | String indexed | |
+| `deviceName` | String? | |
+| `userAgent` | String? | |
+| `ipAddress` | String? | |
+| `lastActiveAt` | DateTime | |
+| `revokedAt` | DateTime? | Set = logged out |
+| `createdAt` | DateTime | |
+
+---
+
+### `OtpChallenge`
+
+One-time codes for signup, login, password/PIN reset, admin login.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String? FK → User | Null during signup before user exists |
+| `target` | String | Email or phone |
+| `purpose` | OtpPurpose | |
+| `codeHash` | String | Never store raw OTP |
+| `attempts` | Int | |
+| `expiresAt` | DateTime | |
+| `consumedAt` | DateTime? | Used |
+| `createdAt` | DateTime | |
+
+Index: `(target, purpose)`.
+
+---
+
+### `KycProfile`
+
+One KYC case per user (1:1). BVN/NIN, liveness, Prembly status, reviewer.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String unique FK → User | Cascade |
+| `status` | KycCaseStatus | |
+| `bvn` / `bvnName` / `bvnMatchScore` | | |
+| `nin` / `ninName` / `ninMatchScore` | | |
+| `livenessPassed` | Boolean | |
+| `selfieUrl` | String? | |
+| `addressDocUrl` | String? | Proof of address |
+| `rejectionReason` | String? | |
+| `provider` | String? | e.g. Prembly |
+| `bvnProviderStatus` | String? | PENDING / SUCCESS / FAILED / RETRY |
+| `ninProviderStatus` | String? | same |
+| `providerAttempts` | Int | |
+| `providerLastError` | String? | |
+| `providerReference` | String? | |
+| `providerCheckedAt` | DateTime? | |
+| `reviewedByAdminId` | String? | Loose admin id |
+| `reviewedAt` | DateTime? | |
+| `createdAt` / `updatedAt` | DateTime | |
+
+---
+
+### `PushDevice`
+
+Expo / FCM token for the mobile app.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `token` | String unique | |
+| `platform` | String? | ios / android |
+| `deviceName` | String? | |
+| `createdAt` / `updatedAt` | DateTime | |
+
+---
+
+### `ConsentAcceptance`
+
+Which legal docs a user accepted.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `docKey` | String | e.g. terms |
+| `version` | String | |
+| `acceptedAt` | DateTime | |
+
+Index: `(userId, docKey)`.
+
+---
+
+### `AdminUser`
+
+Console operator (separate from `User`).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `email` | String unique | |
+| `name` | String | |
+| `passwordHash` | String | |
+| `role` | AdminRole | |
+| `pinHash` | String? | |
+| `department` | String? | |
+| `phone` | String? | |
+| `invitePending` | Boolean | Invited, not yet set password |
+| `require2fa` | Boolean | Policy flag |
+| `totpSecretEnc` | String? | AES-GCM confirmed secret |
+| `totpPendingEnc` | String? | Enroll until confirmed |
+| `totpEnabled` | Boolean | |
+| `totpConfirmedAt` | DateTime? | |
+| `makerChecker` | Boolean | Dual control |
+| `active` | Boolean | |
+| `createdAt` / `updatedAt` | DateTime | |
+
+**Relations:** `AdminSession` (1→many), assigned `SupportTicket` (1→many).
+
+---
+
+### `AdminSession`
+
+Admin refresh token. `locked` = needs step-up (PIN/TOTP). `revokedAt` = logged out.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `adminId` | String FK → AdminUser | Cascade |
+| `refreshTokenHash` | String | |
+| `locked` | Boolean | |
+| `lastActiveAt` | DateTime | |
+| `revokedAt` | DateTime? | |
+| `createdAt` | DateTime | |
+
+---
+
+### `LedgerAccount`
+
+Balance bucket. System rows have `userId` null.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String? FK → User | Cascade if set |
+| `type` | LedgerAccountType | Wallet, call, placement, system |
+| `tag` | String | `"default"`; unique per placement |
+| `currency` | String | Default `NGN` |
+| `balanceKobo` | BigInt | Cached balance |
+| `createdAt` / `updatedAt` | DateTime | |
+
+Unique: `(userId, type, currency, tag)`. **Has many** `JournalLine`.
+
+---
+
+### `JournalEntry`
+
+Double-entry header (one economic event).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `kind` | JournalKind | DEPOSIT, PLACEMENT, … |
+| `reference` | String unique | Human/ops ref |
+| `idempotencyKey` | String? unique | Prevents double post |
+| `description` | String? | |
+| `metadata` | Json? | |
+| `createdAt` | DateTime | |
+
+**Has many** `JournalLine` (cascade).
+
+---
+
+### `JournalLine`
+
+One side of a journal (credit or debit).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `entryId` | String FK → JournalEntry | Cascade |
+| `accountId` | String FK → LedgerAccount | **No cascade** |
+| `amountKobo` | BigInt | Positive credit, negative debit |
+| `createdAt` | DateTime | |
+
+---
+
+### `PaymentIntent`
+
+Inbound funding attempt (card / transfer).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `provider` | String | paystack, monnify, … |
+| `channel` | String | card, transfer, … |
+| `amountKobo` | BigInt | |
+| `feeKobo` | BigInt | |
+| `status` | PaymentStatus | PENDING / SUCCESS / FAILED |
+| `reference` | String unique | Our ref |
+| `providerRef` | String? indexed | Provider’s id |
+| `authorizationUrl` | String? | Checkout URL |
+| `metadata` | Json? | |
+| `createdAt` | DateTime | |
+| `completedAt` | DateTime? | |
+
+Success posts a `DEPOSIT` journal to `USER_WALLET`.
+
+---
+
+### `CardToken`
+
+Saved card for later charges / auto-invest.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `provider` | String | Default `paystack` |
+| `token` | String | Provider token |
+| `last4` | String | Display |
+| `brand` | String? | visa, mastercard |
+| `nickname` | String? | |
+| `createdAt` | DateTime | |
+
+---
+
+### `PayoutBank`
+
+Saved NUBAN. Soft-deleted via `removedAt`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `bankCode` | String | |
+| `bankName` | String | |
+| `accountNumber` | String | |
+| `accountName` | String | |
+| `nameMatched` | Boolean | Name enquiry OK |
+| `removedAt` | DateTime? | Hidden from lists |
+| `createdAt` | DateTime | |
+
+**Has many** `WithdrawalRequest`.
+
+---
+
+### `WithdrawalRequest`
+
+Wallet → bank payout.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `payoutBankId` | String FK → PayoutBank | Restrict |
+| `amountKobo` | BigInt | |
+| `status` | WithdrawalStatus | PROCESSING / SUCCESSFUL / DECLINED |
+| `declineReason` | String? | |
+| `reference` | String unique | |
+| `providerRef` | String? | |
+| `processedByAdminId` | String? | Loose admin id |
+| `processedAt` | DateTime? | |
+| `createdAt` / `updatedAt` | DateTime | |
+
+---
+
+### `RateBand`
+
+Live tenor rate (fixed products).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `code` | String unique | e.g. `CALL`, `91-120` |
+| `label` | String | |
+| `minDays` | Int | |
+| `maxDays` | Int? | Null = open-ended |
+| `rateBps` | Int | 100 bps = 1% |
+| `effectiveFrom` | DateTime | |
+| `createdAt` / `updatedAt` | DateTime | |
+
+**Has many** `RateChangeRequest`.
+
+---
+
+### `RateChangeRequest`
+
+Maker-checker rate change.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `bandId` | String FK → RateBand | Restrict |
+| `proposedBps` | Int | |
+| `previousBps` | Int? | Snapshot at propose |
+| `effectiveFrom` | DateTime | When it should go live |
+| `status` | RateChangeStatus | PENDING / APPROVED / REJECTED |
+| `reason` | String? | |
+| `makerAdminId` | String | Loose |
+| `checkerAdminId` | String? | Loose |
+| `decidedAt` | DateTime? | |
+| `appliedAt` | DateTime? | Written onto RateBand |
+| `createdAt` | DateTime | |
+
+---
+
+### `ProductCategory`
+
+Explore catalogue grouping.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `slug` | String unique | URL |
+| `name` | String | |
+| `sortOrder` | Int | |
+
+**Has many** `Product`.
+
+---
+
+### `Product`
+
+Explore product (not the same as a RateBand fixed tenor).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `categoryId` | String FK → ProductCategory | Restrict |
+| `slug` | String unique | |
+| `name` | String | |
+| `blurb` | String | Short |
+| `description` | String? | |
+| `details` | Json? | about, how, risks, faqs, … |
+| `rateBps` | Int | |
+| `tenorDays` | Int | |
+| `minimumKobo` | BigInt | |
+| `availability` | ProductAvailability | OPEN / CLOSING / CLOSED / COMING_SOON |
+| `issuer` | String? | |
+| `largeTicket` | Boolean | Gated |
+| `termsVersion` | String | |
+| `createdAt` / `updatedAt` | DateTime | |
+
+**Has many** `Placement`, `ProductAccessRequest`.
+
+---
+
+### `ProductAccessRequest`
+
+User asked for a gated / large-ticket product. `userId` is stored, not a Prisma User FK.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `productId` | String FK → Product | |
+| `userId` | String | Logical user |
+| `message` | String? | |
+| `createdAt` | DateTime | |
+
+---
+
+### `Placement`
+
+Live holding: call, fixed, or explore.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `kind` | PlacementKind | CALL / FIXED / EXPLORE |
+| `productId` | String? FK → Product | Explore only |
+| `name` | String | Display / nickname |
+| `principalKobo` | BigInt | |
+| `rateBps` | Int | Locked at booking |
+| `tenorDays` | Int? | |
+| `startDate` | DateTime | |
+| `maturityDate` | DateTime? | |
+| `status` | PlacementStatus | ACTIVE / MATURED / CLOSED |
+| `maturityInstruction` | MaturityInstruction | WALLET / ROLLOVER / PAYOUT |
+| `accruedKobo` | BigInt | Interest accrued |
+| `ledgerAccountId` | String? | Logical → LedgerAccount (not Prisma FK) |
+| `goalKobo` | BigInt? | Savings goal |
+| `isGift` | Boolean | From a gift claim |
+| `createdAt` / `updatedAt` | DateTime | |
+
+**Has many** `Gift` (when a gift funds this placement). Indexes: `(userId, status)`, `(maturityDate, status)`.
+
+---
+
+### `Gift`
+
+Investment gift. Placement is created on **claim**, not send.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `senderId` | String FK → User | GiftsSent |
+| `recipientId` | String? FK → User | After claim / known user |
+| `recipientPhone` | String? | Invite by phone |
+| `recipientEmail` | String? | Invite by email |
+| `recipientName` | String? | |
+| `placementId` | String? FK → Placement | After claim |
+| `claimCode` | String unique | |
+| `message` | String? | |
+| `tenorDays` | Int | Default 90 |
+| `status` | GiftStatus | PENDING / CLAIMED / CANCELLED / EXPIRED |
+| `amountKobo` | BigInt | |
+| `createdAt` | DateTime | |
+| `claimedAt` | DateTime? | |
+| `expiresAt` | DateTime? | |
+
+---
+
+### `AutoInvestRule`
+
+Recurring top-up from wallet/card.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `label` | String | |
+| `amountKobo` | BigInt | |
+| `dayOfMonth` | Int | |
+| `frequency` | String | Monthly, Weekly, … |
+| `active` | Boolean | |
+| `cardTokenId` | String? | Logical card |
+| `lastRunAt` | DateTime? | |
+| `nextRunAt` | DateTime? | Worker pickup |
+| `createdAt` | DateTime | |
+
+Index: `(active, nextRunAt)`.
+
+---
+
+### `Notification`
+
+In-app inbox row.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `title` | String | |
+| `body` | String | |
+| `href` | String? | Deep link |
+| `readAt` | DateTime? | Null = unread |
+| `createdAt` | DateTime | |
+
+---
+
+### `NotificationPref`
+
+One row of email/push toggles per user.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String unique FK → User | Cascade |
+| `emailDeposits` … `emailMarketing` | Boolean | Email channels |
+| `pushDeposits` … `pushKyc` | Boolean | Push channels |
+
+---
+
+### `LearnArticle`
+
+Published Learn CMS. No FKs.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `slug` | String unique | |
+| `title` | String | |
+| `summary` | String | |
+| `body` | String | |
+| `category` | String? | |
+| `published` | Boolean | |
+| `createdAt` | DateTime | |
+
+---
+
+### `FeedCard`
+
+Home feed card published by admin.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `title` | String | |
+| `body` | String | |
+| `kind` | String | Card type |
+| `href` | String? | |
+| `active` | Boolean | |
+| `sortOrder` | Int | |
+| `createdAt` | DateTime | |
+
+**Has many** `FeedCardView`.
+
+---
+
+### `FeedCardView`
+
+“This user was shown this card.” Unique `(cardId, userId)`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `cardId` | String FK → FeedCard | Cascade |
+| `userId` | String FK → User | Cascade |
+| `createdAt` | DateTime | |
+
+---
+
+### `SupportTicket`
+
+Customer ticket.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `category` | String | |
+| `subject` | String | |
+| `body` | String | First message |
+| `attachmentUrl` | String? | /uploads/support/… |
+| `attachmentName` | String? | |
+| `assigneeAdminId` | String? FK → AdminUser | SetNull |
+| `priority` | String | urgent / high / normal / low |
+| `status` | TicketStatus | OPEN … CLOSED |
+| `createdAt` / `updatedAt` | DateTime | |
+
+**Has many** `SupportTicketMessage`.
+
+---
+
+### `SupportTicketMessage`
+
+Thread on a ticket. `author` = `USER` | `SUPPORT` | `SYSTEM`.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `ticketId` | String FK → SupportTicket | Cascade |
+| `author` | String | |
+| `body` | String | |
+| `attachmentUrl` | String? | |
+| `attachmentName` | String? | |
+| `createdAt` | DateTime | |
+
+---
+
+### `ChatSession`
+
+Ask AI conversation.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `userId` | String FK → User | Cascade |
+| `flagged` | Boolean | Review flag |
+| `createdAt` | DateTime | |
+
+**Has many** `ChatMessage`.
+
+---
+
+### `ChatMessage`
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `sessionId` | String FK → ChatSession | Cascade |
+| `role` | String | user / assistant |
+| `content` | String | Text |
+| `blocks` | Json? | Rich UI blocks |
+| `createdAt` | DateTime | |
+
+---
+
+### `AuditEvent`
+
+Who changed what. Customer actor is an FK; admin actor is a loose id.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `actorUserId` | String? FK → User | Restrict |
+| `actorAdminId` | String? | Loose |
+| `action` | String indexed | |
+| `entityType` | String? | |
+| `entityId` | String? | |
+| `before` / `after` | Json? | Diff |
+| `ipAddress` | String? | |
+| `userAgent` | String? | |
+| `createdAt` | DateTime indexed | |
+
+---
+
+### `JobRun`
+
+Worker job history (recon, interest, cutoffs, …).
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `jobName` | String | |
+| `status` | String | |
+| `detail` | Json? | |
+| `startedAt` | DateTime | |
+| `finishedAt` | DateTime? | |
+
+---
+
+### `SignupFunnelEvent`
+
+Incomplete signup analytics. No user FK.
+
+| Column | Type | Notes |
+|---|---|---|
+| `id` | String PK | |
+| `email` | String? | |
+| `phone` | String? | |
+| `deviceId` | String? | |
+| `step` | String | Funnel step |
+| `completed` | Boolean | |
+| `metadata` | Json? | |
+| `createdAt` | DateTime | |
+
+---
+
+### `AppConfig`
+
+System settings. PK is the config **key**, value is JSON.
+
+| Column | Type | Notes |
+|---|---|---|
+| `key` | String PK | e.g. limits, maintenance |
+| `value` | Json | |
+| `updatedAt` | DateTime | |
+| `updatedBy` | String? | Loose admin id |
+
+---
+
 ## Typical money path
 
 ```mermaid
