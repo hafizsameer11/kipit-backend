@@ -147,31 +147,53 @@ export async function registerUser(input: {
   userAgent?: string;
 }) {
   const email = input.email.toLowerCase().trim();
+  const phone = input.phone?.trim() || null;
   const existing = await prisma.user.findUnique({ where: { email } });
   if (existing) throw new AppError(409, "Email already registered", "EMAIL_EXISTS");
+  if (phone) {
+    const phoneTaken = await prisma.user.findFirst({ where: { phone } });
+    if (phoneTaken) {
+      throw new AppError(409, "Phone number already registered", "PHONE_EXISTS");
+    }
+  }
 
   const passwordHash = await hashSecret(input.password);
-  const user = await prisma.user.create({
-    data: {
-      email,
-      passwordHash,
-      firstName: input.firstName.trim(),
-      middleName: input.middleName?.trim(),
-      surname: input.surname.trim(),
-      phone: input.phone?.trim() || null,
-      dateOfBirth: input.dateOfBirth ? new Date(input.dateOfBirth) : null,
-      referralCode: makeReferralCode(input.firstName),
-      referredBy: input.referralCode?.trim() || null,
-      biometricsLogin: input.biometricsLogin ?? false,
-      biometricsTxn: input.biometricsTxn ?? false,
-      consents: {
-        create: [
-          { docKey: "terms", version: "1.0" },
-          { docKey: "privacy", version: "1.0" },
-        ],
+  let user;
+  try {
+    user = await prisma.user.create({
+      data: {
+        email,
+        passwordHash,
+        firstName: input.firstName.trim(),
+        middleName: input.middleName?.trim(),
+        surname: input.surname.trim(),
+        phone,
+        dateOfBirth: input.dateOfBirth ? new Date(input.dateOfBirth) : null,
+        referralCode: makeReferralCode(input.firstName),
+        referredBy: input.referralCode?.trim() || null,
+        biometricsLogin: input.biometricsLogin ?? false,
+        biometricsTxn: input.biometricsTxn ?? false,
+        consents: {
+          create: [
+            { docKey: "terms", version: "1.0" },
+            { docKey: "privacy", version: "1.0" },
+          ],
+        },
       },
-    },
-  });
+    });
+  } catch (err: unknown) {
+    const meta = (err as { code?: string; meta?: { target?: string[] } }) ?? {};
+    if (meta.code === "P2002") {
+      const target = meta.meta?.target ?? [];
+      if (target.includes("phone")) {
+        throw new AppError(409, "Phone number already registered", "PHONE_EXISTS");
+      }
+      if (target.includes("email")) {
+        throw new AppError(409, "Email already registered", "EMAIL_EXISTS");
+      }
+    }
+    throw err;
+  }
 
   await ensureUserWallet(user.id);
   await prisma.notificationPref.create({

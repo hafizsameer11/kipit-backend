@@ -19,6 +19,16 @@ withdrawRouter.use(rejectIfMaintenance);
 
 const NAME_MATCH_MIN = 0.5;
 
+function formatSettleDate(isoDate: string) {
+  const [year, month, day] = isoDate.split("-").map(Number);
+  return new Date(Date.UTC(year!, (month ?? 1) - 1, day ?? 1)).toLocaleDateString("en-GB", {
+    day: "numeric",
+    month: "long",
+    year: "numeric",
+    timeZone: "UTC",
+  });
+}
+
 async function resolveAndMatchAccount(input: {
   userId: string;
   bankCode: string;
@@ -337,17 +347,17 @@ withdrawRouter.post(
 
     const { notifyCustomer, sendOpsWithdrawalAlert } = await import("../services/notify.js");
     const customer = await prisma.user.findUnique({ where: { id: req.userId! } });
-    const settleNote = settlement.sameDay
-      ? `Same-day batch (cut-off ${settlement.cutoff} Lagos)`
-      : `After ${settlement.cutoff} Lagos cut-off — settles ${settlement.settleOn}`;
+    const payWhen = settlement.sameDay
+      ? "today"
+      : `on ${formatSettleDate(settlement.settleOn)}`;
     await notifyCustomer({
       userId: req.userId!,
       title: "Withdrawal processing",
-      body: `Your withdrawal of ₦${body.amount.toLocaleString()} is being processed. ${settleNote}.`,
+      body: `Your withdrawal of ₦${body.amount.toLocaleString("en-NG")} is being processed. It will be paid ${payWhen}.`,
       href: "/withdraw/tracker",
       emailKind: "withdrawal",
       amountNaira: body.amount,
-      emailDetail: `Reference ${reference}. ${settleNote}`,
+      emailDetail: `It will be paid ${payWhen}.`,
     }).catch(() => undefined);
     if (customer) {
       await sendOpsWithdrawalAlert({

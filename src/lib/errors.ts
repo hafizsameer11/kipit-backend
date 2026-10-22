@@ -1,5 +1,6 @@
 import type { NextFunction, Request, Response } from "express";
 import { ZodError } from "zod";
+import { captureUnexpectedError } from "./sentry.js";
 
 export class AppError extends Error {
   constructor(
@@ -20,7 +21,8 @@ export function asyncHandler(
   };
 }
 
-export function errorHandler(err: unknown, _req: Request, res: Response, _next: NextFunction) {
+export function errorHandler(err: unknown, req: Request, res: Response, _next: NextFunction) {
+  // Expected client/business errors — same JSON as before; not sent to Sentry.
   if (err instanceof AppError) {
     return res.status(err.statusCode).json({
       error: { message: err.message, code: err.code },
@@ -37,7 +39,9 @@ export function errorHandler(err: unknown, _req: Request, res: Response, _next: 
     });
   }
 
+  // Unexpected only — report then return identical 500 payload.
   console.error(err);
+  captureUnexpectedError(err, req);
   return res.status(500).json({
     error: { message: "Internal server error", code: "INTERNAL" },
   });

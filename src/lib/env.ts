@@ -83,6 +83,9 @@ const envSchema = z.object({
    * Device delivery still uses Expo Push + FCM/APNs credentials in EAS.
    */
   EXPO_ACCESS_TOKEN: z.string().optional().default(""),
+
+  /** Optional Sentry DSN. Empty = Sentry disabled; API behaviour unchanged. */
+  SENTRY_DSN: z.string().optional().default(""),
 });
 
 export const env = envSchema.parse(process.env);
