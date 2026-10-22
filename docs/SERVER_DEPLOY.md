@@ -153,3 +153,64 @@ Protect `main`: require PR, no direct push, no force-push.
 2. Open PR → CI runs
 3. Merge PR → Deploy workflow builds + uploads tarball
 4. Server: `ls /var/www/web` `/var/www/admin` `/var/www/backend`
+
+---
+
+## 5. Database backups (before migrations)
+
+### What production does
+
+On every backend start, `start.sh` runs:
+
+1. `prisma migrate status`
+2. If there are **pending** migrations → `backup-db.sh` (`pg_dump` → gzip)
+3. `prisma migrate deploy` (never `db push` in production)
+
+Backups land in:
+
+```text
+/home/deploy/backups/postgres/kipit-YYYYMMDDTHHMMSSZ.sql.gz
+```
+
+Kept for **14 days** (`BACKUP_KEEP_DAYS`). Override with env if needed.
+
+### One-time server prep
+
+```bash
+sudo apt-get install -y postgresql-client
+sudo install -d -m 700 -o deploy -g deploy /home/deploy/backups/postgres
+```
+
+`deploy` must be able to reach Postgres using `DATABASE_URL` from `/var/www/backend/.env`.
+
+### Restore (emergency)
+
+```bash
+# stop API first
+sudo systemctl stop backend.service
+
+gunzip -c /home/deploy/backups/postgres/kipit-TIMESTAMP.sql.gz \
+  | psql "$DATABASE_URL"
+
+sudo systemctl start backend.service
+```
+
+### Other options (choose what you want later)
+
+| Option | Pros | Cons |
+|---|---|---|
+| **A. Pre-migrate dump (what we ship)** | Automatic when schema changes; tied to deploys | Only runs when migrations are pending |
+| **B. Daily cron `pg_dump`** | Covers “no deploy for weeks” | Extra disk; still need retention |
+| **C. Host/managed backups** (DO, AWS RDS, etc.) | Point-in-time recovery | Provider-specific; still keep A or B |
+| **D. WAL archiving / PITR** | Best recovery granularity | More ops work |
+
+Recommended: **A + B** (migration-triggered + nightly), and **C** if the DB is managed.
+
+### Optional nightly cron (as `deploy`)
+
+```bash
+crontab -e
+# daily 02:15 UTC
+15 2 * * * cd /var/www/backend && /bin/bash ./backup-db.sh >> /home/deploy/backups/postgres/cron.log 2>&1
+```
+
