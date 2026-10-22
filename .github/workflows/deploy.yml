@@ -21,6 +21,7 @@ jobs:
           mkdir -p release
           cp -r dist prisma package.json package-lock.json release/
           cp scripts/backend-start.sh release/start.sh
+          cp smoke.txt release/smoke.txt
           chmod +x release/start.sh
           cd release
           npm ci --omit=dev
