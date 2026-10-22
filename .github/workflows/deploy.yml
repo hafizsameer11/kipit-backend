@@ -3,27 +3,39 @@ name: Deploy
 on:
   push:
     branches: [main]
-  workflow_dispatch:
-
-concurrency:
-  group: deploy-backend-main
-  cancel-in-progress: false
 
 jobs:
   deploy:
-    name: Deploy API + worker to VPS
     runs-on: ubuntu-latest
-    # Set repository variable ENABLE_AUTO_DEPLOY=true after VPS secrets exist.
-    if: ${{ vars.ENABLE_AUTO_DEPLOY == 'true' }}
     steps:
-      - name: Deploy over SSH
-        uses: appleboy/ssh-action@v1.2.0
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
         with:
-          host: ${{ secrets.VPS_HOST }}
-          username: ${{ secrets.VPS_USER }}
-          key: ${{ secrets.VPS_SSH_KEY }}
-          port: ${{ secrets.VPS_PORT || 22 }}
-          script: |
-            set -euo pipefail
-            cd "${{ secrets.BACKEND_DEPLOY_PATH }}"
-            bash scripts/deploy.sh
+          node-version: 22
+          cache: npm
+      - run: npm ci
+      - run: npx prisma generate
+      - run: npm run build
+      - name: Assemble runtime folder
+        run: |
+          mkdir -p release
+          cp -r dist prisma package.json package-lock.json release/
+          cp scripts/backend-start.sh release/start.sh
+          chmod +x release/start.sh
+          cd release
+          npm ci --omit=dev
+          npx prisma generate
+      - run: tar -C release -czf release.tar.gz .
+      - name: Upload and deploy
+        env:
+          SSH_KEY: ${{ secrets.VPS_SSH_KEY }}
+          KNOWN_HOSTS: ${{ secrets.VPS_KNOWN_HOSTS }}
+          HOST: ${{ secrets.VPS_HOST }}
+          USER: ${{ secrets.VPS_USER }}
+        run: |
+          install -d -m 700 ~/.ssh
+          printf '%s\n' "$SSH_KEY" > ~/.ssh/deploy_key
+          chmod 600 ~/.ssh/deploy_key
+          printf '%s\n' "$KNOWN_HOSTS" > ~/.ssh/known_hosts
+          scp -i ~/.ssh/deploy_key -o IdentitiesOnly=yes release.tar.gz "$USER@$HOST:/home/deploy/incoming/backend.tar.gz"
+          ssh -i ~/.ssh/deploy_key -o IdentitiesOnly=yes "$USER@$HOST" "/usr/local/bin/deploy backend"

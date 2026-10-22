@@ -4,45 +4,17 @@
 
 | Branch | Purpose |
 |---|---|
-| `main` | Production. VPS auto-deploys from here only. |
-| `feat/*`, `fix/*`, `chore/*` | Day-to-day work. Never push straight to `main`. |
+| `main` | Production. Merge here → GitHub Actions builds and deploys. |
+| `feat/*`, `fix/*`, `chore/*` | Work branches. Open a PR into `main`. Never push straight to `main`. |
 
-Workflow:
-
-1. Create a branch from `main`
-2. Push the branch
-3. Open a **Pull Request** into `main`
-4. CI runs (typecheck)
-5. Merge the PR → GitHub Actions deploys to the VPS
-
-Protect `main` in GitHub: Settings → Branches → require PR + status checks.
+Protect `main`: require PR + CI status checks; no force-push.
 
 ## Remotes
 
-- `origin` — internal / previous remote (optional)
-- `client` — **client org** `https://github.com/Kipitapp/kipit-backend.git` (source of truth for Kipit)
+- `client` — https://github.com/Kipitapp/kipit-backend.git (source of truth)
 
-```bash
-git remote add client https://github.com/Kipitapp/kipit-backend.git
-git push -u client main
-```
+## Deploy
 
-## Auto deploy
+See [SERVER_DEPLOY.md](./SERVER_DEPLOY.md).
 
-On every push to `main` (including PR merges), `.github/workflows/deploy.yml` SSHs into the VPS and runs `scripts/deploy.sh`.
-
-Enable after secrets are set:
-
-- Repository **variable**: `ENABLE_AUTO_DEPLOY=true`
-- Repository **secrets**: see server checklist below
-
-### Coolify (optional)
-
-Coolify is fine if you want a UI for deploys. Point a Coolify resource at this repo, branch `main`, build/start commands matching `scripts/deploy.sh`. Do **not** run both Coolify and GitHub Actions deploy on the same path or they will fight.
-
-## Local deploy test on VPS
-
-```bash
-cd /var/www/kipit-backend
-bash scripts/deploy.sh
-```
+On push to `main`, Actions packs the runtime folder (compiled `dist`, Prisma, production `node_modules`, `start.sh`), uploads `/home/deploy/incoming/backend.tar.gz`, and runs `/usr/local/bin/deploy backend` → `/var/www/backend`.
