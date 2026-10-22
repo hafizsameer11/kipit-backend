@@ -2,6 +2,9 @@ import { createApp } from "./app.js";
 import { env } from "./lib/env.js";
 import { prisma } from "./lib/prisma.js";
 import { connectRedis, redis } from "./lib/redis.js";
+import { captureUnexpectedError, initSentry } from "./lib/sentry.js";
+
+initSentry();
 
 async function main() {
   await prisma.$connect();
@@ -20,6 +23,7 @@ async function main() {
 
 main().catch(async (err) => {
   console.error(err);
+  captureUnexpectedError(err);
   await prisma.$disconnect().catch(() => undefined);
   await redis.quit().catch(() => undefined);
   process.exit(1);

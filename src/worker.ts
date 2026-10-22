@@ -9,12 +9,15 @@ import { runApplyRateChangesJob } from "./jobs/apply-rate-changes.js";
 import { runWalletReconJob } from "./jobs/wallet-recon.js";
 import { prisma } from "./lib/prisma.js";
 import { connectRedis } from "./lib/redis.js";
+import { captureUnexpectedError, initSentry } from "./lib/sentry.js";
 import { getConfigJson } from "./services/admin-ops-store.js";
 import {
   currentLagosHm,
   getOpsCutoffs,
   lagosDateKey,
 } from "./services/system-settings.js";
+
+initSentry();
 
 const KYC_INTERVAL_MS = 60_000;
 const MONNIFY_VA_INTERVAL_MS = 60_000;
@@ -219,6 +222,7 @@ async function main() {
 
 main().catch(async (err) => {
   console.error(err);
+  captureUnexpectedError(err);
   await prisma.$disconnect();
   process.exit(1);
 });
