@@ -8,6 +8,10 @@ function smtpConfigured() {
   return Boolean(env.SMTP_HOST && env.SMTP_USER && env.SMTP_PASS);
 }
 
+function resendConfigured() {
+  return Boolean(env.RESEND_API_KEY?.trim());
+}
+
 function getTransporter() {
   if (!smtpConfigured()) return null;
   if (!transporter) {
@@ -24,6 +28,10 @@ function getTransporter() {
   return transporter;
 }
 
+function defaultFrom() {
+  return (env.EMAIL_FROM || env.SMTP_USER || "").trim();
+}
+
 export type SendEmailAttachment = {
   filename: string;
   content: Buffer | string;
@@ -35,7 +43,6 @@ export type SendEmailInput = {
   subject: string;
   text: string;
   html?: string;
-  /** Optional — existing callers omit this; SMTP only for now. */
   attachments?: SendEmailAttachment[];
 };
 
@@ -76,37 +83,89 @@ export async function sendBrandedNoticeEmail(input: {
   return sendEmail({ to: input.to, subject: input.subject, text, html });
 }
 
-/**
- * Send email via Hostinger SMTP (or any SMTP).
- * EMAIL_PROVIDER=resend is reserved for later — falls back to SMTP/console for now.
- */
-export async function sendEmail(input: SendEmailInput) {
-  const from = env.EMAIL_FROM || env.SMTP_USER;
+function toBase64(content: Buffer | string) {
+  return Buffer.isBuffer(content) ? content.toString("base64") : Buffer.from(content).toString("base64");
+}
 
-  if (env.EMAIL_PROVIDER === "resend" && env.RESEND_API_KEY) {
-    // Placeholder until Resend is activated — use SMTP if available, else log.
-    console.warn("[email] EMAIL_PROVIDER=resend but Resend not wired yet; using SMTP/console");
+async function sendViaResend(input: SendEmailInput, from: string) {
+  const payload: Record<string, unknown> = {
+    from,
+    to: [input.to],
+    subject: input.subject,
+    text: input.text,
+    html: input.html ?? input.text.replace(/\n/g, "<br/>"),
+  };
+  if (input.attachments?.length) {
+    payload.attachments = input.attachments.map((a) => ({
+      filename: a.filename,
+      content: toBase64(a.content),
+      ...(a.contentType ? { content_type: a.contentType } : {}),
+    }));
   }
 
+  const res = await fetch("https://api.resend.com/emails", {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${env.RESEND_API_KEY}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify(payload),
+  });
+
+  const body = (await res.json().catch(() => ({}))) as { id?: string; message?: string; name?: string };
+  if (!res.ok) {
+    const detail = body.message || body.name || res.statusText || `HTTP ${res.status}`;
+    throw new Error(`Resend failed: ${detail}`);
+  }
+  return { id: body.id || `resend-${Date.now()}`, provider: "resend" as const };
+}
+
+async function sendViaSmtp(input: SendEmailInput, from: string) {
   const tx = getTransporter();
-  if (tx && from) {
-    const info = await tx.sendMail({
-      from,
-      to: input.to,
-      subject: input.subject,
-      text: input.text,
-      html: input.html ?? input.text.replace(/\n/g, "<br/>"),
-      attachments: input.attachments?.map((a) => ({
-        filename: a.filename,
-        content: a.content,
-        contentType: a.contentType,
-      })),
-    });
-    return { id: info.messageId, provider: "smtp" as const };
+  if (!tx) return null;
+  const info = await tx.sendMail({
+    from,
+    to: input.to,
+    subject: input.subject,
+    text: input.text,
+    html: input.html ?? input.text.replace(/\n/g, "<br/>"),
+    attachments: input.attachments?.map((a) => ({
+      filename: a.filename,
+      content: a.content,
+      contentType: a.contentType,
+    })),
+  });
+  return { id: info.messageId, provider: "smtp" as const };
+}
+
+/**
+ * Send email. Prefer Resend when EMAIL_PROVIDER=resend (default for production).
+ * SMTP remains available when EMAIL_PROVIDER=smtp.
+ */
+export async function sendEmail(input: SendEmailInput) {
+  const from = defaultFrom();
+  const provider = env.EMAIL_PROVIDER;
+
+  if (provider === "resend") {
+    if (!resendConfigured()) {
+      console.warn("[email] EMAIL_PROVIDER=resend but RESEND_API_KEY is empty");
+    } else if (!from) {
+      console.warn("[email] EMAIL_FROM is required for Resend");
+    } else {
+      return sendViaResend(input, from);
+    }
+  }
+
+  if (provider === "smtp" || (provider === "resend" && smtpConfigured())) {
+    if (from) {
+      const smtp = await sendViaSmtp(input, from);
+      if (smtp) return smtp;
+    }
   }
 
   // Dev / misconfigured: log instead of failing the auth flow.
   console.info("[email:console]", {
+    provider,
     from: from || "(unset)",
     to: input.to,
     subject: input.subject,
@@ -152,7 +211,9 @@ export async function sendOtpEmail(input: {
 }
 
 export function emailTransportReady() {
-  return smtpConfigured() || (env.EMAIL_PROVIDER === "resend" && Boolean(env.RESEND_API_KEY));
+  if (env.EMAIL_PROVIDER === "resend") return resendConfigured() && Boolean(defaultFrom());
+  if (env.EMAIL_PROVIDER === "smtp") return smtpConfigured() && Boolean(defaultFrom());
+  return false;
 }
 
 /** Invite a non-Kipit recipient to download the app and claim a gift. */

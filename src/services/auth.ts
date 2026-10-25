@@ -13,11 +13,11 @@ import {
 } from "../lib/crypto.js";
 import { ensureUserWallet } from "./ledger.js";
 import { writeAudit } from "./audit.js";
-import { sendOtpEmail } from "./email.js";
+import { emailTransportReady, sendOtpEmail } from "./email.js";
 
 function otpCode() {
-  // Fixed demo OTP only when SMTP is not configured (local/dev convenience).
-  if (env.NODE_ENV === "development" && !env.SMTP_HOST) return env.DEMO_OTP;
+  // Fixed demo OTP only when no real email transport is configured (local/dev).
+  if (env.NODE_ENV === "development" && !emailTransportReady()) return env.DEMO_OTP;
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
@@ -71,7 +71,7 @@ export async function requestOtp(input: {
   return {
     expiresAt,
     sent: true,
-    ...(env.NODE_ENV === "development" && !env.SMTP_HOST ? { debugCode: code } : {}),
+    ...(env.NODE_ENV === "development" && !emailTransportReady() ? { debugCode: code } : {}),
   };
 }
 
