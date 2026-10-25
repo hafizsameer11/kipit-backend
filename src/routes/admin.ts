@@ -32,6 +32,7 @@ import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { Router } from "express";
 import { nanoid } from "nanoid";
+import type { Prisma } from "@prisma/client";
 
 async function userBalances(userId: string) {
   const wallet = await ensureUserWallet(userId);
@@ -412,66 +413,181 @@ adminRouter.get(
 adminRouter.get(
   "/users",
   requireAdmin,
-  asyncHandler(async (req, res) => {
-    const q = typeof req.query.q === "string" ? req.query.q : undefined;
-    const users = await prisma.user.findMany({
-      where: q
-        ? {
-            OR: [
-              { email: { contains: q, mode: "insensitive" } },
-              { firstName: { contains: q, mode: "insensitive" } },
-              { surname: { contains: q, mode: "insensitive" } },
-              { phone: { contains: q } },
+  asyncHandler(async (req: AdminRequest, res) => {
+    const q = typeof req.query.q === "string" ? req.query.q.trim() : "";
+    const statusRaw = typeof req.query.status === "string" ? req.query.status.trim().toLowerCase() : "all";
+    const tierRaw = typeof req.query.tier === "string" ? req.query.tier.trim() : "all";
+    const page = Math.max(1, Number(req.query.page) || 1);
+    const pageSize = Math.min(100, Math.max(1, Number(req.query.pageSize) || 25));
+    const dormantCutoff = new Date(Date.now() - 90 * 24 * 60 * 60 * 1000);
+
+    const and: Prisma.UserWhereInput[] = [];
+    if (q) {
+      and.push({
+        OR: [
+          { email: { contains: q, mode: "insensitive" } },
+          { firstName: { contains: q, mode: "insensitive" } },
+          { surname: { contains: q, mode: "insensitive" } },
+          { phone: { contains: q } },
+          { id: { contains: q, mode: "insensitive" } },
+        ],
+      });
+    }
+
+    if (tierRaw === "0" || tierRaw === "1" || tierRaw === "2") {
+      and.push({ kycTier: `TIER_${tierRaw}` });
+    }
+
+    if (statusRaw === "frozen") {
+      and.push({ frozen: true });
+    } else if (statusRaw === "pending") {
+      and.push({ frozen: false });
+      and.push({
+        OR: [{ kycTier: "TIER_0" }, { kycProfile: { is: { status: "PENDING_REVIEW" } } }],
+      });
+    } else if (statusRaw === "active") {
+      and.push({ frozen: false });
+      and.push({ kycTier: { not: "TIER_0" } });
+      and.push({
+        OR: [
+          { kycProfile: { is: null } },
+          { kycProfile: { isNot: { status: "PENDING_REVIEW" } } },
+        ],
+      });
+      and.push({
+        OR: [
+          { sessions: { some: { revokedAt: null, lastActiveAt: { gte: dormantCutoff } } } },
+          {
+            AND: [
+              { sessions: { none: { revokedAt: null } } },
+              { updatedAt: { gte: dormantCutoff } },
             ],
-          }
-        : undefined,
-      take: 100,
-      orderBy: { createdAt: "desc" },
-      include: {
-        ledgerAccounts: true,
-        placements: { where: { status: "ACTIVE" } },
-        sessions: { where: { revokedAt: null }, orderBy: { lastActiveAt: "desc" }, take: 1 },
-        kycProfile: true,
-      },
-    });
+          },
+        ],
+      });
+    } else if (statusRaw === "dormant") {
+      and.push({ frozen: false });
+      and.push({
+        sessions: { none: { revokedAt: null, lastActiveAt: { gte: dormantCutoff } } },
+      });
+      and.push({
+        OR: [
+          { sessions: { some: { revokedAt: null, lastActiveAt: { lt: dormantCutoff } } } },
+          {
+            AND: [
+              { sessions: { none: { revokedAt: null } } },
+              { updatedAt: { lt: dormantCutoff } },
+            ],
+          },
+        ],
+      });
+    }
+
+    const where: Prisma.UserWhereInput | undefined = and.length ? { AND: and } : undefined;
+    const skip = (page - 1) * pageSize;
+
+    const [total, users, summaryUsers, summaryVerified, summaryPending] = await Promise.all([
+      prisma.user.count({ where }),
+      prisma.user.findMany({
+        where,
+        skip,
+        take: pageSize,
+        orderBy: { createdAt: "desc" },
+        include: {
+          ledgerAccounts: true,
+          placements: { where: { status: "ACTIVE" } },
+          sessions: { where: { revokedAt: null }, orderBy: { lastActiveAt: "desc" }, take: 1 },
+          kycProfile: true,
+        },
+      }),
+      prisma.user.count(),
+      prisma.user.count({ where: { kycTier: "TIER_2" } }),
+      prisma.user.count({
+        where: {
+          frozen: false,
+          OR: [{ kycTier: "TIER_0" }, { kycProfile: { is: { status: "PENDING_REVIEW" } } }],
+        },
+      }),
+    ]);
+
+    const totalPages = Math.max(1, Math.ceil(total / pageSize));
+    let summaryAum: number | null = null;
+    if (canViewAum(req.adminRole)) {
+      const [wallets, call, placements] = await Promise.all([
+        prisma.ledgerAccount.aggregate({
+          where: { type: "USER_WALLET" },
+          _sum: { balanceKobo: true },
+        }),
+        prisma.ledgerAccount.aggregate({
+          where: { type: "USER_CALL" },
+          _sum: { balanceKobo: true },
+        }),
+        prisma.placement.aggregate({
+          where: { status: "ACTIVE" },
+          _sum: { principalKobo: true },
+        }),
+      ]);
+      summaryAum = koboToNaira(
+        (wallets._sum.balanceKobo ?? 0n) +
+          (call._sum.balanceKobo ?? 0n) +
+          (placements._sum.principalKobo ?? 0n),
+      );
+    }
+
     res.json({
-      data: users.map((u) => {
-        const wallet =
-          u.ledgerAccounts.find((a) => a.type === "USER_WALLET")?.balanceKobo ?? 0n;
-        const call = u.ledgerAccounts.find((a) => a.type === "USER_CALL")?.balanceKobo ?? 0n;
-        let fixed = 0n;
-        let explore = 0n;
-        for (const p of u.placements) {
-          if (p.kind === "EXPLORE") explore += p.principalKobo;
-          else if (p.kind === "FIXED") fixed += p.principalKobo;
-        }
-        const last = u.sessions[0]?.lastActiveAt ?? u.updatedAt;
-        const status =
-          u.frozen
+      data: {
+        users: users.map((u) => {
+          const wallet =
+            u.ledgerAccounts.find((a) => a.type === "USER_WALLET")?.balanceKobo ?? 0n;
+          const call = u.ledgerAccounts.find((a) => a.type === "USER_CALL")?.balanceKobo ?? 0n;
+          let fixed = 0n;
+          let explore = 0n;
+          for (const p of u.placements) {
+            if (p.kind === "EXPLORE") explore += p.principalKobo;
+            else if (p.kind === "FIXED") fixed += p.principalKobo;
+          }
+          const last = u.sessions[0]?.lastActiveAt ?? u.updatedAt;
+          const inactive = last.getTime() < dormantCutoff.getTime();
+          const status = u.frozen
             ? "frozen"
             : u.kycProfile?.status === "PENDING_REVIEW" || u.kycTier === "TIER_0"
               ? "pending"
-              : "active";
-        return {
-          id: u.id,
-          email: u.email,
-          phone: u.phone,
-          name: `${u.firstName} ${u.surname}`,
-          accountType: u.accountType,
-          businessName: u.businessName,
-          kycTier: u.kycTier,
-          frozen: u.frozen,
-          createdAt: u.createdAt,
-          lastActiveAt: last,
-          status,
-          balances: {
-            wallet: koboToNaira(wallet),
-            call: koboToNaira(call),
-            fixed: koboToNaira(fixed),
-            explore: koboToNaira(explore),
+              : inactive
+                ? "dormant"
+                : "active";
+          return {
+            id: u.id,
+            email: u.email,
+            phone: u.phone,
+            name: `${u.firstName} ${u.surname}`,
+            accountType: u.accountType,
+            businessName: u.businessName,
+            kycTier: u.kycTier,
+            frozen: u.frozen,
+            createdAt: u.createdAt,
+            lastActiveAt: last,
+            status,
+            balances: {
+              wallet: koboToNaira(wallet),
+              call: koboToNaira(call),
+              fixed: koboToNaira(fixed),
+              explore: koboToNaira(explore),
+            },
+          };
+        }),
+        meta: {
+          page,
+          pageSize,
+          total,
+          totalPages,
+          summary: {
+            users: summaryUsers,
+            verified: summaryVerified,
+            pending: summaryPending,
+            aum: summaryAum,
           },
-        };
-      }),
+        },
+      },
     });
   }),
 );
