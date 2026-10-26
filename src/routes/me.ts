@@ -4,7 +4,7 @@ import { requireAuth } from "../middleware/auth.js";
 import { asyncHandler } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { publicUser } from "../services/auth.js";
-import { ensureUserCall, ensureUserWallet } from "../services/money.js";
+import { ensureUserCall, ensureUserWallet, interestForPeriod } from "../services/money.js";
 import { koboToNaira } from "../lib/crypto.js";
 import { recordFeedImpressions } from "../services/feed-impressions.js";
 import { portfolioInterestThisWeek } from "../lib/call-interest-week.js";
@@ -67,21 +67,32 @@ meRouter.get(
         interestWeekSeries: interestWeek.interestWeekSeries,
         interestWeekLabels: interestWeek.interestWeekLabels,
         nextMaturity: next?.maturityDate
-          ? {
-              id: next.id,
-              name: next.name,
-              amount: koboToNaira(next.principalKobo),
-              date: next.maturityDate.toISOString().slice(0, 10),
-              daysLeft: Math.max(
-                0,
-                Math.ceil((next.maturityDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
-              ),
-              tenorDays: next.tenorDays,
-              // Additive — older app/web clients ignore; avoids client join to holdings.
-              ratePct: next.rateBps / 100,
-              startDate: next.startDate.toISOString().slice(0, 10),
-              accrued: koboToNaira(next.accruedKobo),
-            }
+          ? (() => {
+              const tenorDays = next.tenorDays ?? 0;
+              const expectedInterestKobo =
+                tenorDays > 0
+                  ? interestForPeriod(next.principalKobo, next.rateBps, tenorDays)
+                  : 0n;
+              const interestKobo =
+                next.accruedKobo > expectedInterestKobo ? next.accruedKobo : expectedInterestKobo;
+              return {
+                id: next.id,
+                name: next.name,
+                amount: koboToNaira(next.principalKobo),
+                date: next.maturityDate.toISOString().slice(0, 10),
+                daysLeft: Math.max(
+                  0,
+                  Math.ceil((next.maturityDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
+                ),
+                tenorDays: next.tenorDays,
+                // Additive — older app/web clients ignore; avoids client join to holdings.
+                ratePct: next.rateBps / 100,
+                startDate: next.startDate.toISOString().slice(0, 10),
+                accrued: koboToNaira(next.accruedKobo),
+                expectedInterest: koboToNaira(expectedInterestKobo),
+                expectedPayout: koboToNaira(next.principalKobo + interestKobo),
+              };
+            })()
           : null,
         holdings: placements.slice(0, 5).map((p) => ({
           id: p.id,
