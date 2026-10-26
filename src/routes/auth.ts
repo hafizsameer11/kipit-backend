@@ -13,6 +13,7 @@ import {
   requestOtp,
   resetPasswordWithOtp,
   revokeSession,
+  setAccountPassword,
   setTransactionPin,
   verifyOtp,
 } from "../services/auth.js";
@@ -226,6 +227,29 @@ authRouter.post(
 
     await resetPasswordWithOtp(body);
     res.json({ data: { ok: true } });
+  }),
+);
+
+/** First-time password for Google / passwordless accounts (authenticated). */
+authRouter.post(
+  "/password/set",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        password: z.string().min(8),
+        confirmPassword: z.string().min(8),
+      })
+      .parse(req.body);
+
+    if (body.password !== body.confirmPassword) {
+      return res.status(400).json({
+        error: { message: "Passwords do not match", code: "PASSWORD_MISMATCH" },
+      });
+    }
+
+    const user = await setAccountPassword(req.userId!, body.password);
+    res.json({ data: { user } });
   }),
 );
 
