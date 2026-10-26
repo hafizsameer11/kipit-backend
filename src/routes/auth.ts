@@ -5,6 +5,7 @@ import type { AuthRequest } from "../middleware/auth.js";
 import { requireAuth } from "../middleware/auth.js";
 import {
   createSession,
+  loginWithGoogleIdToken,
   loginWithPassword,
   publicUser,
   refreshSession,
@@ -158,6 +159,27 @@ authRouter.get(
         ? { valid: true, code: user.referralCode, inviterFirstName: user.firstName }
         : { valid: false },
     });
+  }),
+);
+
+authRouter.post(
+  "/google",
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        idToken: z.string().min(20),
+        deviceName: z.string().optional(),
+      })
+      .parse(req.body);
+
+    const session = await loginWithGoogleIdToken({
+      idToken: body.idToken,
+      deviceName: body.deviceName,
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent") ?? undefined,
+    });
+
+    res.json({ data: session });
   }),
 );
 

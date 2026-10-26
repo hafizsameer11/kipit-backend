@@ -13,11 +13,11 @@ import {
 } from "../lib/crypto.js";
 import { ensureUserWallet } from "./ledger.js";
 import { writeAudit } from "./audit.js";
-import { sendOtpEmail } from "./email.js";
+import { emailTransportReady, sendOtpEmail } from "./email.js";
 
 function otpCode() {
-  // Fixed demo OTP only when SMTP is not configured (local/dev convenience).
-  if (env.NODE_ENV === "development" && !env.SMTP_HOST) return env.DEMO_OTP;
+  // Fixed demo OTP only when no real email transport is configured (local/dev).
+  if (env.NODE_ENV === "development" && !emailTransportReady()) return env.DEMO_OTP;
   return String(Math.floor(100000 + Math.random() * 900000));
 }
 
@@ -71,7 +71,7 @@ export async function requestOtp(input: {
   return {
     expiresAt,
     sent: true,
-    ...(env.NODE_ENV === "development" && !env.SMTP_HOST ? { debugCode: code } : {}),
+    ...(env.NODE_ENV === "development" && !emailTransportReady() ? { debugCode: code } : {}),
   };
 }
 
@@ -260,6 +260,9 @@ export async function createSession(input: {
   ipAddress?: string;
 }) {
   const user = await prisma.user.findUniqueOrThrow({ where: { id: input.userId } });
+  if (user.frozen) {
+    throw new AppError(403, "This account is frozen. Contact support.", "ACCOUNT_FROZEN");
+  }
   if (user.lockedUntil && user.lockedUntil > new Date()) {
     throw new AppError(423, "Account temporarily locked", "ACCOUNT_LOCKED");
   }
@@ -294,6 +297,150 @@ export async function createSession(input: {
     refreshToken,
     sessionId: session.id,
   };
+}
+
+function splitGoogleName(payload: {
+  given_name?: string;
+  family_name?: string;
+  name?: string;
+}) {
+  const given = payload.given_name?.trim();
+  const family = payload.family_name?.trim();
+  if (given || family) {
+    return {
+      firstName: given || family || "Kipit",
+      surname: family || given || "User",
+    };
+  }
+  const parts = (payload.name || "").trim().split(/\s+/).filter(Boolean);
+  if (parts.length === 0) return { firstName: "Kipit", surname: "User" };
+  if (parts.length === 1) return { firstName: parts[0]!, surname: parts[0]! };
+  return { firstName: parts[0]!, surname: parts.slice(1).join(" ") };
+}
+
+/** Sign in or register via Google Identity Services ID token (web). */
+export async function loginWithGoogleIdToken(input: {
+  idToken: string;
+  deviceName?: string;
+  userAgent?: string;
+  ipAddress?: string;
+}) {
+  const clientId = env.GOOGLE_CLIENT_ID?.trim();
+  if (!clientId) {
+    throw new AppError(503, "Google sign-in is not configured", "GOOGLE_NOT_CONFIGURED");
+  }
+
+  const { OAuth2Client } = await import("google-auth-library");
+  const client = new OAuth2Client(clientId);
+  let ticket;
+  try {
+    ticket = await client.verifyIdToken({
+      idToken: input.idToken,
+      audience: clientId,
+    });
+  } catch {
+    throw new AppError(401, "Google sign-in failed. Try again.", "GOOGLE_TOKEN_INVALID");
+  }
+
+  const payload = ticket.getPayload();
+  if (!payload?.sub) {
+    throw new AppError(401, "Google sign-in failed. Try again.", "GOOGLE_TOKEN_INVALID");
+  }
+  if (!payload.email || payload.email_verified === false) {
+    throw new AppError(
+      400,
+      "Your Google account email must be verified to continue.",
+      "GOOGLE_EMAIL_UNVERIFIED",
+    );
+  }
+
+  const email = payload.email.toLowerCase().trim();
+  const googleSub = payload.sub;
+  const { firstName, surname } = splitGoogleName(payload);
+
+  let user = await prisma.user.findFirst({
+    where: { OR: [{ googleSub }, { email }] },
+  });
+
+  if (user?.frozen) {
+    throw new AppError(403, "This account is frozen. Contact support.", "ACCOUNT_FROZEN");
+  }
+
+  if (!user) {
+    user = await prisma.user.create({
+      data: {
+        email,
+        googleSub,
+        firstName,
+        surname,
+        passwordHash: null,
+        referralCode: makeReferralCode(firstName),
+        consents: {
+          create: [
+            { docKey: "terms", version: "1.0" },
+            { docKey: "privacy", version: "1.0" },
+          ],
+        },
+      },
+    });
+    await ensureUserWallet(user.id).catch(() => undefined);
+    await writeAudit({
+      actorUserId: user.id,
+      action: "user.register.google",
+      entityType: "User",
+      entityId: user.id,
+      ipAddress: input.ipAddress,
+      userAgent: input.userAgent,
+    });
+  } else if (!user.googleSub) {
+    user = await prisma.user.update({
+      where: { id: user.id },
+      data: { googleSub },
+    });
+  } else if (user.googleSub !== googleSub) {
+    throw new AppError(409, "This email is linked to a different Google account.", "GOOGLE_SUB_MISMATCH");
+  }
+
+  const priorActive = await prisma.session.count({
+    where: { userId: user.id, revokedAt: null },
+  });
+
+  const session = await createSession({
+    userId: user.id,
+    deviceName: input.deviceName,
+    userAgent: input.userAgent,
+    ipAddress: input.ipAddress,
+  });
+
+  await writeAudit({
+    actorUserId: user.id,
+    action: "user.login.google",
+    entityType: "Session",
+    entityId: session.sessionId,
+    ipAddress: input.ipAddress,
+    userAgent: input.userAgent,
+  });
+
+  if (priorActive > 0) {
+    const { createUserNotification } = await import("./notify.js");
+    const deviceLabel = input.deviceName?.trim() || "another device";
+    await createUserNotification({
+      userId: user.id,
+      title: "New sign-in",
+      body: `Your Kipit account was signed in on ${deviceLabel}. If this wasn’t you, review your sessions.`,
+      href: "/settings/security",
+      pushKind: "security",
+    }).catch(() => undefined);
+  }
+
+  {
+    const { claimPendingGiftsForUser } = await import("./gifts.js");
+    await claimPendingGiftsForUser(user.id).catch((err) =>
+      console.warn("[gift-auto-claim]", err),
+    );
+  }
+
+  return session;
 }
 
 export async function loginWithPassword(input: {

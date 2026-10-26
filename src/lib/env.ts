@@ -12,10 +12,11 @@ const envSchema = z.object({
   JWT_REFRESH_TTL: z.string().default("30d"),
   DEMO_OTP: z.string().default("123456"),
 
-  /** smtp (Hostinger) now; set resend later when activating Resend */
-  EMAIL_PROVIDER: z.enum(["smtp", "resend", "console"]).default("smtp"),
+  /** resend (production) | smtp (legacy) | console (dev log only) */
+  EMAIL_PROVIDER: z.enum(["smtp", "resend", "console"]).default("resend"),
+  /** e.g. "Kipit <noreply@your-verified-domain.com>" — domain must be verified in Resend */
   EMAIL_FROM: z.string().optional().default(""),
-  /** Hostinger typically: smtp.hostinger.com, port 465 (SSL) or 587 (STARTTLS) */
+  /** Legacy SMTP (only used when EMAIL_PROVIDER=smtp) */
   SMTP_HOST: z.string().optional().default(""),
   SMTP_PORT: z.coerce.number().default(465),
   SMTP_SECURE: z
@@ -24,7 +25,7 @@ const envSchema = z.object({
     .transform((v) => v === "true"),
   SMTP_USER: z.string().optional().default(""),
   SMTP_PASS: z.string().optional().default(""),
-  /** Reserved for later */
+  /** Resend API key from https://resend.com/api-keys */
   RESEND_API_KEY: z.string().optional().default(""),
 
   /** sandbox = use provider sandbox URLs; live = production URLs */
@@ -86,6 +87,12 @@ const envSchema = z.object({
 
   /** Optional Sentry DSN. Empty = Sentry disabled; API behaviour unchanged. */
   SENTRY_DSN: z.string().optional().default(""),
+
+  /**
+   * Google Sign-In (Web) OAuth client ID — same value as VITE_GOOGLE_CLIENT_ID.
+   * Empty = POST /v1/auth/google returns 503.
+   */
+  GOOGLE_CLIENT_ID: z.string().optional().default(""),
 });
 
 export const env = envSchema.parse(process.env);
