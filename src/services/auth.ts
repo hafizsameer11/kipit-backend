@@ -619,6 +619,7 @@ export function publicUser(user: {
   biometricsLogin: boolean;
   biometricsTxn: boolean;
   pinHash: string | null;
+  passwordHash?: string | null;
   createdAt: Date;
   frozen?: boolean;
   frozenReason?: string | null;
@@ -635,8 +636,36 @@ export function publicUser(user: {
     biometricsLogin: user.biometricsLogin,
     biometricsTxn: user.biometricsTxn,
     hasPin: Boolean(user.pinHash),
+    hasPassword: Boolean(user.passwordHash),
     frozen: Boolean(user.frozen),
     frozenReason: user.frozenReason ?? null,
     createdAt: user.createdAt,
   };
+}
+
+/** First-time password for Google (or other passwordless) accounts. */
+export async function setAccountPassword(userId: string, password: string) {
+  if (password.length < 8) {
+    throw new AppError(400, "Password must be at least 8 characters", "WEAK_PASSWORD");
+  }
+  const user = await prisma.user.findUniqueOrThrow({ where: { id: userId } });
+  if (user.passwordHash) {
+    throw new AppError(
+      409,
+      "Password already set. Use forgot password to change it.",
+      "PASSWORD_EXISTS",
+    );
+  }
+  const passwordHash = await hashSecret(password);
+  const updated = await prisma.user.update({
+    where: { id: userId },
+    data: { passwordHash },
+  });
+  await writeAudit({
+    actorUserId: userId,
+    action: "user.password_set",
+    entityType: "User",
+    entityId: userId,
+  });
+  return publicUser(updated);
 }
