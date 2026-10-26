@@ -185,6 +185,8 @@ export async function getPublicAppConfig() {
       reconRun: cutoffs.reconRun,
       interestAccrual: cutoffs.interestAccrual,
     },
+    /** Public Web OAuth client ID — safe to expose (not a secret). */
+    googleClientId: env.GOOGLE_CLIENT_ID?.trim() || "",
   };
 }
 
