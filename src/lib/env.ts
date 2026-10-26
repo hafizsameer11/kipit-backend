@@ -87,6 +87,12 @@ const envSchema = z.object({
 
   /** Optional Sentry DSN. Empty = Sentry disabled; API behaviour unchanged. */
   SENTRY_DSN: z.string().optional().default(""),
+
+  /**
+   * Google Sign-In (Web) OAuth client ID — same value as VITE_GOOGLE_CLIENT_ID.
+   * Empty = POST /v1/auth/google returns 503.
+   */
+  GOOGLE_CLIENT_ID: z.string().optional().default(""),
 });
 
 export const env = envSchema.parse(process.env);

@@ -124,6 +124,8 @@ model User {
   email            String?   @unique
   phone            String?   @unique
   passwordHash     String?
+  /** Google subject (`sub`) from Sign in with Google ID token. */
+  googleSub        String?   @unique
   firstName        String
   middleName       String?
   surname          String
