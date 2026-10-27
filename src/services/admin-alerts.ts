@@ -88,19 +88,32 @@ async function sendToRecipients(
   htmlBody: string,
   title: string,
 ) {
-  if (!recipients.length) return { sent: 0 };
+  if (!recipients.length) return { sent: 0, results: [] as { email: string; ok: boolean; provider?: string; id?: string; error?: string }[] };
   const html = brandWrap(title, htmlBody);
-  await Promise.all(
-    recipients.map((r) =>
-      sendEmail({ to: r.email, subject, text, html }).catch((err) =>
-        console.warn("[admin-alerts] email failed", r.email, err),
-      ),
-    ),
+  const results = await Promise.all(
+    recipients.map(async (r) => {
+      try {
+        const out = await sendEmail({ to: r.email, subject, text, html });
+        return {
+          email: r.email,
+          ok: true as const,
+          provider: out.provider,
+          id: out.id,
+        };
+      } catch (err) {
+        console.warn("[admin-alerts] email failed", r.email, err);
+        return {
+          email: r.email,
+          ok: false as const,
+          error: err instanceof Error ? err.message : "Send failed",
+        };
+      }
+    }),
   );
-  return { sent: recipients.length };
+  return { sent: results.filter((r) => r.ok).length, results };
 }
 
-/** Withdrawal approvals — respects prefs; falls back to OPS_ALERT_EMAILS then role list. */
+/** Withdrawal approvals — managed email list + admin prefs; env OPS_ALERT_EMAILS as last resort. */
 export async function sendOpsWithdrawalAlert(input: {
   customerName: string;
   customerEmail?: string | null;
@@ -108,31 +121,54 @@ export async function sendOpsWithdrawalAlert(input: {
   reference: string;
   withdrawalId: string;
 }) {
-  let recipients = await recipientsForAlert("withdrawalApprovals", {
+  const {
+    listActiveWithdrawalNotifyEmails,
+    recordWithdrawalNotifyActivity,
+  } = await import("./withdrawal-notify-emails.js");
+
+  const managed = await listActiveWithdrawalNotifyEmails();
+  const byEmail = new Map<string, AdminRecipient>();
+
+  for (const row of managed) {
+    byEmail.set(row.email.toLowerCase(), {
+      id: row.id,
+      email: row.email,
+      name: row.label || "Ops alert",
+    });
+  }
+
+  const prefRecipients = await recipientsForAlert("withdrawalApprovals", {
     permission: "withdrawal.process",
   });
+  for (const r of prefRecipients) {
+    const key = r.email.toLowerCase();
+    if (!byEmail.has(key)) byEmail.set(key, r);
+  }
 
-  if (!recipients.length) {
+  if (!byEmail.size) {
     const envList = (env.OPS_ALERT_EMAILS || "")
       .split(",")
       .map((s) => s.trim())
       .filter(Boolean);
     if (envList.length) {
-      recipients = envList.map((email) => ({ id: email, email, name: "Ops" }));
+      for (const email of envList) {
+        byEmail.set(email.toLowerCase(), { id: email, email, name: "Ops" });
+      }
     } else {
       const ops = await prisma.adminUser.findMany({
         where: { active: true, role: { in: ["SUPER", "GLOBAL", "OPERATIONS"] } },
         select: { id: true, email: true, name: true },
       });
-      const filtered: AdminRecipient[] = [];
       for (const a of ops) {
         const prefs = await getAdminAlertPrefs(a.id);
-        if (prefs.withdrawalApprovals) filtered.push(a);
+        if (prefs.withdrawalApprovals) {
+          byEmail.set(a.email.toLowerCase(), a);
+        }
       }
-      recipients = filtered;
     }
   }
 
+  const recipients = [...byEmail.values()];
   if (!recipients.length) return { sent: 0 };
 
   const amount = `₦${input.amountNaira.toLocaleString("en-NG")}`;
@@ -150,7 +186,29 @@ export async function sendOpsWithdrawalAlert(input: {
      <p style="color:#64748b;margin:12px 0 0">Reference ${input.reference}</p>
      <p style="margin:16px 0 0">Open <strong>Withdrawals</strong> in the admin console to complete or decline.</p>`;
 
-  return sendToRecipients(recipients, subject, text, htmlBody, "Withdrawal request");
+  const result = await sendToRecipients(
+    recipients,
+    subject,
+    text,
+    htmlBody,
+    "Withdrawal request",
+  );
+
+  await recordWithdrawalNotifyActivity(
+    result.results.map((r) => ({
+      email: r.email,
+      status: r.ok ? ("sent" as const) : ("failed" as const),
+      provider: r.ok ? r.provider ?? null : null,
+      providerMessageId: r.ok ? r.id ?? null : null,
+      error: r.ok ? null : r.error ?? "Send failed",
+      withdrawalId: input.withdrawalId,
+      reference: input.reference,
+      amountNaira: input.amountNaira,
+      subject,
+    })),
+  ).catch((err) => console.warn("[admin-alerts] activity log failed", err));
+
+  return { sent: result.sent };
 }
 
 export async function sendAmlEscalationAlert(input: {
