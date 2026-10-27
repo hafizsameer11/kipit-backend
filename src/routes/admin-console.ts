@@ -1067,3 +1067,90 @@ adminConsoleRouter.post(
     res.status(201).json({ data: result });
   }),
 );
+
+/** Managed emails for withdrawal-request ops alerts (platform or external). */
+adminConsoleRouter.get(
+  "/settings/withdrawal-notify-emails",
+  asyncHandler(async (_req, res) => {
+    const {
+      listWithdrawalNotifyEmails,
+      listWithdrawalNotifyActivity,
+    } = await import("../services/withdrawal-notify-emails.js");
+    const [emails, activity] = await Promise.all([
+      listWithdrawalNotifyEmails(),
+      listWithdrawalNotifyActivity(100),
+    ]);
+    res.json({ data: { emails, activity } });
+  }),
+);
+
+adminConsoleRouter.post(
+  "/settings/withdrawal-notify-emails",
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        email: z.string().min(3).max(160),
+        label: z.string().max(80).optional(),
+      })
+      .parse(req.body);
+    const { addWithdrawalNotifyEmail } = await import(
+      "../services/withdrawal-notify-emails.js"
+    );
+    const row = await addWithdrawalNotifyEmail({
+      email: body.email,
+      label: body.label,
+      adminId: req.adminId,
+    });
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "settings.withdrawal_notify_email.added",
+      entityType: "AppConfig",
+      entityId: row.id,
+      after: { email: row.email },
+    }).catch(() => undefined);
+    res.status(201).json({ data: row });
+  }),
+);
+
+adminConsoleRouter.patch(
+  "/settings/withdrawal-notify-emails/:id",
+  asyncHandler(async (req: AdminRequest, res) => {
+    const id = String(req.params.id || "");
+    const body = z
+      .object({
+        active: z.boolean().optional(),
+        label: z.string().max(80).optional(),
+      })
+      .parse(req.body);
+    const { updateWithdrawalNotifyEmail } = await import(
+      "../services/withdrawal-notify-emails.js"
+    );
+    const row = await updateWithdrawalNotifyEmail(id, body, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "settings.withdrawal_notify_email.updated",
+      entityType: "AppConfig",
+      entityId: row.id,
+      after: { email: row.email, active: row.active },
+    }).catch(() => undefined);
+    res.json({ data: row });
+  }),
+);
+
+adminConsoleRouter.delete(
+  "/settings/withdrawal-notify-emails/:id",
+  asyncHandler(async (req: AdminRequest, res) => {
+    const id = String(req.params.id || "");
+    const { removeWithdrawalNotifyEmail } = await import(
+      "../services/withdrawal-notify-emails.js"
+    );
+    await removeWithdrawalNotifyEmail(id, req.adminId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "settings.withdrawal_notify_email.removed",
+      entityType: "AppConfig",
+      entityId: id,
+    }).catch(() => undefined);
+    res.json({ data: { ok: true } });
+  }),
+);
