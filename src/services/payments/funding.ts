@@ -14,7 +14,7 @@ import {
 import { cardFeeKobo } from "./types.js";
 
 const MIN_DEPOSIT_NAIRA = 1_000;
-const MAX_CARD_NAIRA = 1_000_000;
+const MAX_CARD_NAIRA = 100_000_000;
 
 function depositDescription(channel: string) {
   if (channel === "card") return "Card deposit";
