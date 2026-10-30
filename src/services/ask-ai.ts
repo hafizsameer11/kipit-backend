@@ -1,7 +1,21 @@
 import { env, askAiLlmEnabled, openaiBaseUrl } from "../lib/env.js";
 import { prisma } from "../lib/prisma.js";
 import { koboToNaira } from "../lib/crypto.js";
-import { ensureUserCall, getWalletBalanceKobo } from "./money.js";
+import { ensureUserCall, getWalletBalanceKobo, interestForPeriod } from "./money.js";
+
+/** Principal + max(accrued so far, full-tenor expected interest). */
+function maturityExpectedPayoutNaira(p: {
+  principalKobo: bigint;
+  accruedKobo: bigint;
+  rateBps: number;
+  tenorDays: number | null;
+}) {
+  const tenor = p.tenorDays ?? 0;
+  const interest =
+    tenor > 0 ? interestForPeriod(p.principalKobo, p.rateBps, tenor) : 0n;
+  const add = interest > p.accruedKobo ? interest : p.accruedKobo;
+  return koboToNaira(p.principalKobo + add);
+}
 
 export type ChatUiBlock = Record<string, unknown>;
 
@@ -399,8 +413,10 @@ async function runTool(
       date: next.maturityDate.toISOString().slice(0, 10),
       amount: koboToNaira(next.principalKobo),
       rate: `${next.rateBps / 100}% p.a.`,
+      ratePct: next.rateBps / 100,
       daysLeft,
-      expectedPayout: koboToNaira(next.principalKobo + next.accruedKobo),
+      tenorDays: next.tenorDays,
+      expectedPayout: maturityExpectedPayoutNaira(next),
     };
     blocks.push({
       kind: "maturity",
@@ -408,7 +424,9 @@ async function runTool(
       date: payload.date,
       amount: payload.amount,
       rate: payload.rate,
+      ratePct: payload.ratePct,
       daysLeft: payload.daysLeft,
+      tenorDays: payload.tenorDays,
       expectedPayout: payload.expectedPayout,
     });
     return payload;
@@ -639,11 +657,13 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
           date: next.maturityDate.toISOString().slice(0, 10),
           amount: koboToNaira(next.principalKobo),
           rate: `${next.rateBps / 100}% p.a.`,
+          ratePct: next.rateBps / 100,
           daysLeft: Math.max(
             0,
             Math.ceil((next.maturityDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
           ),
-          expectedPayout: koboToNaira(next.principalKobo + next.accruedKobo),
+          tenorDays: next.tenorDays,
+          expectedPayout: maturityExpectedPayoutNaira(next),
         },
         { kind: "handoff", label: "View holding", to: `/portfolio/${next.id}` },
       ],
