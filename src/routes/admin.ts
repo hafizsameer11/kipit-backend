@@ -20,10 +20,9 @@ import {
   type AdminRequest,
 } from "../middleware/admin.js";
 
-const SUPER_ADMIN_ROLES = ["SUPER", "GLOBAL"] as const;
-
+/** True SUPER role only — GLOBAL is not treated as super for privileged overrides. */
 function assertSuperAdmin(req: AdminRequest) {
-  if (!req.adminRole || !SUPER_ADMIN_ROLES.includes(req.adminRole as (typeof SUPER_ADMIN_ROLES)[number])) {
+  if (req.adminRole !== "SUPER") {
     throw new AppError(403, "Super admin only", "FORBIDDEN");
   }
 }
@@ -1109,7 +1108,7 @@ adminRouter.post(
 adminRouter.patch(
   "/users/:userId/placements/:placementId",
   requireAdmin,
-  requireRoles("SUPER", "GLOBAL"),
+  requireRoles("SUPER"),
   asyncHandler(async (req: AdminRequest, res) => {
     const userId = String(req.params.userId);
     const placementId = String(req.params.placementId);
@@ -2526,12 +2525,21 @@ adminRouter.patch(
         invitePending: z.boolean().optional(),
       })
       .parse(req.body);
+
+    const targetId = String(req.params.id);
+    if (body.role != null) {
+      assertSuperAdmin(req);
+      if (targetId === req.adminId) {
+        throw new AppError(400, "You cannot change your own role", "SELF_ROLE_CHANGE");
+      }
+    }
+
     const data = {
       ...body,
       ...(body.phone !== undefined ? { phone: body.phone.replace(/\D/g, "") || null } : {}),
     };
     const row = await prisma.adminUser.update({
-      where: { id: String(req.params.id) },
+      where: { id: targetId },
       data,
     });
     await writeAudit({
