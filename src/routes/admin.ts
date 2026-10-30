@@ -15,9 +15,29 @@ import { writeAudit } from "../services/audit.js";
 import {
   requireAdmin,
   requirePermission,
+  requireRoles,
   canViewAum,
   type AdminRequest,
 } from "../middleware/admin.js";
+
+const SUPER_ADMIN_ROLES = ["SUPER", "GLOBAL"] as const;
+
+function assertSuperAdmin(req: AdminRequest) {
+  if (!req.adminRole || !SUPER_ADMIN_ROLES.includes(req.adminRole as (typeof SUPER_ADMIN_ROLES)[number])) {
+    throw new AppError(403, "Super admin only", "FORBIDDEN");
+  }
+}
+
+/** Derive rateBps from principal + tenor + interest (simple interest). */
+function rateBpsFromInterest(principalKobo: bigint, tenorDays: number, interestKobo: bigint): number {
+  if (principalKobo <= 0n || tenorDays <= 0 || interestKobo < 0n) return 0;
+  return Number((interestKobo * 10000n * 365n) / (principalKobo * BigInt(tenorDays)));
+}
+
+function daysBetween(start: Date, end: Date): number {
+  const ms = end.getTime() - start.getTime();
+  return Math.max(1, Math.round(ms / 86_400_000));
+}
 import { listSignupDropoffs } from "../services/signup-funnel.js";
 import {
   sendWelcomeEmail,
@@ -825,6 +845,9 @@ adminRouter.get(
           tenorDays: p.tenorDays,
           expectedInterest: koboToNaira(interest),
           expectedPayout: koboToNaira(p.principalKobo + interest),
+          accrued: koboToNaira(p.accruedKobo),
+          maturityInstruction: p.maturityInstruction,
+          startDate: p.startDate,
           maturityDate: p.maturityDate,
           createdAt: p.createdAt,
         };
@@ -883,8 +906,26 @@ adminRouter.post(
         productId: z.string().optional(),
         maturityInstruction: z.enum(["WALLET", "ROLLOVER", "PAYOUT"]).default("WALLET"),
         debitWallet: z.boolean().default(true),
+        /** Super-admin overrides */
+        startDate: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}/)).optional(),
+        maturityDate: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}/)).optional(),
+        ratePct: z.number().nonnegative().optional(),
+        expectedInterest: z.number().nonnegative().optional(),
+        expectedPayout: z.number().positive().optional(),
+        accrued: z.number().nonnegative().optional(),
+        status: z.enum(["ACTIVE", "MATURED", "CLOSED"]).optional(),
       })
       .parse(req.body);
+
+    const hasOverrides =
+      body.startDate != null ||
+      body.maturityDate != null ||
+      body.ratePct != null ||
+      body.expectedInterest != null ||
+      body.expectedPayout != null ||
+      body.accrued != null ||
+      body.status != null;
+    if (hasOverrides) assertSuperAdmin(req);
 
     const user = await prisma.user.findUnique({ where: { id: userId } });
     if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
@@ -932,13 +973,34 @@ adminRouter.post(
       tenorDays = product.tenorDays;
       productId = product.id;
       name = product.name;
-    } else {
+    } else if (body.ratePct == null && body.expectedInterest == null && body.expectedPayout == null) {
       const bands = await prisma.rateBand.findMany();
       const band = bands.find(
         (b) => tenorDays >= b.minDays && (b.maxDays == null || tenorDays <= b.maxDays),
       );
       if (!band) throw new AppError(400, "No rate band for tenor", "RATE_BAND_MISSING");
       rateBps = band.rateBps;
+    }
+
+    const startDate = body.startDate ? new Date(body.startDate) : new Date();
+    let maturityDate: Date;
+    if (body.maturityDate) {
+      maturityDate = new Date(body.maturityDate);
+      if (body.tenorDays == null) {
+        tenorDays = daysBetween(startDate, maturityDate);
+      }
+    } else {
+      maturityDate = new Date(startDate);
+      maturityDate.setDate(maturityDate.getDate() + tenorDays);
+    }
+
+    if (body.ratePct != null) {
+      rateBps = Math.round(body.ratePct * 100);
+    } else if (body.expectedPayout != null) {
+      const interestKobo = nairaToKobo(body.expectedPayout) - amountKobo;
+      rateBps = rateBpsFromInterest(amountKobo, tenorDays, interestKobo < 0n ? 0n : interestKobo);
+    } else if (body.expectedInterest != null) {
+      rateBps = rateBpsFromInterest(amountKobo, tenorDays, nairaToKobo(body.expectedInterest));
     }
 
     const placementTag = `placement_${nanoid(10)}`;
@@ -981,9 +1043,8 @@ adminRouter.post(
       });
     }
 
-    const maturityDate = new Date();
-    maturityDate.setDate(maturityDate.getDate() + tenorDays);
     const expectedInterest = interestForPeriod(amountKobo, rateBps, tenorDays);
+    const accruedKobo = body.accrued != null ? nairaToKobo(body.accrued) : 0n;
 
     const placement = await prisma.placement.create({
       data: {
@@ -994,9 +1055,12 @@ adminRouter.post(
         principalKobo: amountKobo,
         rateBps,
         tenorDays,
+        startDate,
         maturityDate,
         maturityInstruction: body.maturityInstruction,
         ledgerAccountId: placementAccount.id,
+        accruedKobo,
+        ...(body.status ? { status: body.status } : {}),
       },
     });
 
@@ -1005,7 +1069,14 @@ adminRouter.post(
       action: "placement.admin_create",
       entityType: "Placement",
       entityId: placement.id,
-      after: { amount: body.amount, kind: placement.kind },
+      after: {
+        amount: body.amount,
+        kind: placement.kind,
+        startDate: startDate.toISOString(),
+        maturityDate: maturityDate.toISOString(),
+        rateBps,
+        overrides: hasOverrides,
+      },
     });
     await notifyCustomer({
       userId,
@@ -1025,8 +1096,162 @@ adminRouter.post(
         amount: body.amount,
         ratePct: rateBps / 100,
         tenorDays,
+        startDate: startDate.toISOString().slice(0, 10),
         maturityDate: maturityDate.toISOString().slice(0, 10),
         expectedInterest: koboToNaira(expectedInterest),
+        expectedPayout: koboToNaira(amountKobo + expectedInterest),
+      },
+    });
+  }),
+);
+
+/** Super-admin: edit any field on an existing placement. */
+adminRouter.patch(
+  "/users/:userId/placements/:placementId",
+  requireAdmin,
+  requireRoles("SUPER", "GLOBAL"),
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const placementId = String(req.params.placementId);
+    const body = z
+      .object({
+        name: z.string().min(1).optional(),
+        principal: z.number().positive().optional(),
+        ratePct: z.number().nonnegative().optional(),
+        tenorDays: z.number().int().positive().optional(),
+        startDate: z.string().datetime({ offset: true }).or(z.string().regex(/^\d{4}-\d{2}-\d{2}/)).optional(),
+        maturityDate: z
+          .string()
+          .datetime({ offset: true })
+          .or(z.string().regex(/^\d{4}-\d{2}-\d{2}/))
+          .nullable()
+          .optional(),
+        expectedInterest: z.number().nonnegative().optional(),
+        expectedPayout: z.number().positive().optional(),
+        accrued: z.number().nonnegative().optional(),
+        status: z.enum(["ACTIVE", "MATURED", "CLOSED"]).optional(),
+        maturityInstruction: z.enum(["WALLET", "ROLLOVER", "PAYOUT"]).optional(),
+        kind: z.enum(["FIXED", "CALL", "EXPLORE"]).optional(),
+      })
+      .parse(req.body);
+
+    const placement = await prisma.placement.findFirst({
+      where: { id: placementId, userId },
+    });
+    if (!placement) throw new AppError(404, "Placement not found", "NOT_FOUND");
+
+    const before = {
+      name: placement.name,
+      principal: koboToNaira(placement.principalKobo),
+      ratePct: placement.rateBps / 100,
+      tenorDays: placement.tenorDays,
+      startDate: placement.startDate,
+      maturityDate: placement.maturityDate,
+      status: placement.status,
+      accrued: koboToNaira(placement.accruedKobo),
+      maturityInstruction: placement.maturityInstruction,
+      kind: placement.kind,
+    };
+
+    let principalKobo = placement.principalKobo;
+    if (body.principal != null) principalKobo = nairaToKobo(body.principal);
+
+    let startDate = placement.startDate;
+    if (body.startDate) startDate = new Date(body.startDate);
+
+    let maturityDate = placement.maturityDate;
+    if (body.maturityDate === null) maturityDate = null;
+    else if (body.maturityDate) maturityDate = new Date(body.maturityDate);
+
+    let tenorDays = body.tenorDays ?? placement.tenorDays ?? 0;
+    if (body.tenorDays == null && body.startDate && maturityDate) {
+      tenorDays = daysBetween(startDate, maturityDate);
+    } else if (body.maturityDate && body.tenorDays == null && maturityDate) {
+      tenorDays = daysBetween(startDate, maturityDate);
+    } else if (body.startDate && body.maturityDate == null && body.tenorDays == null && maturityDate) {
+      tenorDays = daysBetween(startDate, maturityDate);
+    } else if (body.tenorDays != null && body.maturityDate == null) {
+      maturityDate = new Date(startDate);
+      maturityDate.setDate(maturityDate.getDate() + tenorDays);
+    }
+
+    let rateBps = placement.rateBps;
+    if (body.ratePct != null) {
+      rateBps = Math.round(body.ratePct * 100);
+    } else if (body.expectedPayout != null) {
+      const interestKobo = nairaToKobo(body.expectedPayout) - principalKobo;
+      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestKobo < 0n ? 0n : interestKobo);
+    } else if (body.expectedInterest != null) {
+      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, nairaToKobo(body.expectedInterest));
+    }
+
+    const updated = await prisma.$transaction(async (tx) => {
+      const row = await tx.placement.update({
+        where: { id: placementId },
+        data: {
+          ...(body.name != null ? { name: body.name } : {}),
+          ...(body.kind != null && body.kind !== "CALL" ? { kind: body.kind } : {}),
+          principalKobo,
+          rateBps,
+          tenorDays: tenorDays || null,
+          startDate,
+          maturityDate,
+          ...(body.status != null ? { status: body.status } : {}),
+          ...(body.maturityInstruction != null
+            ? { maturityInstruction: body.maturityInstruction }
+            : {}),
+          ...(body.accrued != null ? { accruedKobo: nairaToKobo(body.accrued) } : {}),
+        },
+      });
+
+      if (body.principal != null && placement.ledgerAccountId) {
+        await tx.ledgerAccount.update({
+          where: { id: placement.ledgerAccountId },
+          data: { balanceKobo: principalKobo },
+        });
+      }
+
+      return row;
+    });
+
+    const interest = interestForPeriod(updated.principalKobo, updated.rateBps, updated.tenorDays ?? 0);
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "placement.admin_update",
+      entityType: "Placement",
+      entityId: placementId,
+      before,
+      after: {
+        name: updated.name,
+        principal: koboToNaira(updated.principalKobo),
+        ratePct: updated.rateBps / 100,
+        tenorDays: updated.tenorDays,
+        startDate: updated.startDate,
+        maturityDate: updated.maturityDate,
+        status: updated.status,
+        accrued: koboToNaira(updated.accruedKobo),
+        maturityInstruction: updated.maturityInstruction,
+        kind: updated.kind,
+      },
+    });
+
+    res.json({
+      data: {
+        id: updated.id,
+        name: updated.name,
+        kind: updated.kind,
+        status: updated.status,
+        principal: koboToNaira(updated.principalKobo),
+        ratePct: updated.rateBps / 100,
+        tenorDays: updated.tenorDays,
+        expectedInterest: koboToNaira(interest),
+        expectedPayout: koboToNaira(updated.principalKobo + interest),
+        accrued: koboToNaira(updated.accruedKobo),
+        maturityInstruction: updated.maturityInstruction,
+        startDate: updated.startDate,
+        maturityDate: updated.maturityDate,
+        createdAt: updated.createdAt,
       },
     });
   }),
