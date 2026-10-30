@@ -2526,12 +2526,21 @@ adminRouter.patch(
         invitePending: z.boolean().optional(),
       })
       .parse(req.body);
+
+    const targetId = String(req.params.id);
+    if (body.role != null) {
+      assertSuperAdmin(req);
+      if (targetId === req.adminId) {
+        throw new AppError(400, "You cannot change your own role", "SELF_ROLE_CHANGE");
+      }
+    }
+
     const data = {
       ...body,
       ...(body.phone !== undefined ? { phone: body.phone.replace(/\D/g, "") || null } : {}),
     };
     const row = await prisma.adminUser.update({
-      where: { id: String(req.params.id) },
+      where: { id: targetId },
       data,
     });
     await writeAudit({
