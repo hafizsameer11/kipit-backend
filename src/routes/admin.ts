@@ -726,8 +726,18 @@ adminRouter.get(
         accountType: user.accountType,
         businessName: user.businessName,
         businessRcNumber: user.businessRcNumber,
+        dateOfBirth: user.dateOfBirth,
+        gender: user.gender,
+        occupation: user.occupation,
+        employmentStatus: user.employmentStatus,
+        sourceOfFunds: user.sourceOfFunds,
+        addressStreet: user.addressStreet,
+        addressCity: user.addressCity,
+        addressState: user.addressState,
+        addressLga: user.addressLga,
         kycTier: user.kycTier,
         frozen: user.frozen,
+        frozenReason: user.frozenReason,
         createdAt: user.createdAt,
         lastActiveAt,
         lastActive: fmtRelative(lastActiveAt),
@@ -1342,6 +1352,387 @@ adminRouter.patch(
       reason: reason ?? undefined,
     }).catch((err) => console.warn("[admin] freeze notify failed", err));
     res.json({ data: { id: user.id, frozen: user.frozen, frozenReason: user.frozenReason } });
+  }),
+);
+
+/** SUPER: credit or debit wallet / call balance. */
+adminRouter.post(
+  "/users/:userId/wallet/adjust",
+  requireAdmin,
+  requireRoles("SUPER"),
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const body = z
+      .object({
+        pool: z.enum(["WALLET", "CALL"]).default("WALLET"),
+        direction: z.enum(["credit", "debit"]),
+        amount: z.number().positive(),
+        reason: z.string().min(3).max(500),
+      })
+      .parse(req.body);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
+
+    const amountKobo = nairaToKobo(body.amount);
+    const suspense = await ensureSystemAccount("SYSTEM_SUSPENSE");
+    const idempotencyKey = `admin-bal-${body.direction}-${body.pool}-${nanoid(12)}`;
+    const description = `Admin ${body.direction} (${body.pool}): ${body.reason}`;
+
+    if (body.pool === "WALLET") {
+      if (body.direction === "credit") {
+        await creditWalletFrom({
+          userId,
+          amountKobo,
+          kind: "ADJUSTMENT",
+          idempotencyKey,
+          description,
+          debitAccountId: suspense.id,
+          metadata: { reason: body.reason, actorAdminId: req.adminId },
+        });
+      } else {
+        await debitWallet({
+          userId,
+          amountKobo,
+          kind: "ADJUSTMENT",
+          idempotencyKey,
+          description,
+          creditAccountId: suspense.id,
+          metadata: { reason: body.reason, actorAdminId: req.adminId },
+        });
+      }
+    } else {
+      const { creditCallFrom, postJournal } = await import("../services/money.js");
+      const call = await ensureUserCall(userId);
+      if (body.direction === "credit") {
+        await creditCallFrom({
+          userId,
+          amountKobo,
+          kind: "ADJUSTMENT",
+          idempotencyKey,
+          description,
+          debitAccountId: suspense.id,
+          metadata: { reason: body.reason, actorAdminId: req.adminId },
+        });
+      } else {
+        if (call.balanceKobo < amountKobo) {
+          throw new AppError(400, "Insufficient Call Account balance", "INSUFFICIENT_FUNDS");
+        }
+        await postJournal({
+          kind: "ADJUSTMENT",
+          idempotencyKey,
+          description,
+          metadata: { reason: body.reason, actorAdminId: req.adminId },
+          lines: [
+            { accountId: call.id, amountKobo: -amountKobo },
+            { accountId: suspense.id, amountKobo },
+          ],
+        });
+      }
+    }
+
+    const balances = await userBalances(userId);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: `balance.admin_${body.direction}`,
+      entityType: "User",
+      entityId: userId,
+      after: {
+        pool: body.pool,
+        direction: body.direction,
+        amount: body.amount,
+        reason: body.reason,
+        balances,
+      },
+    });
+
+    res.json({ data: { balances, pool: body.pool, direction: body.direction, amount: body.amount } });
+  }),
+);
+
+/** SUPER: edit customer profile fields. */
+adminRouter.patch(
+  "/users/:userId",
+  requireAdmin,
+  requireRoles("SUPER"),
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const body = z
+      .object({
+        email: z.string().email().optional(),
+        phone: z.string().nullable().optional(),
+        firstName: z.string().min(1).optional(),
+        middleName: z.string().nullable().optional(),
+        surname: z.string().min(1).optional(),
+        accountType: z.enum(["PERSONAL", "BUSINESS"]).optional(),
+        businessName: z.string().nullable().optional(),
+        businessRcNumber: z.string().nullable().optional(),
+        dateOfBirth: z.string().regex(/^\d{4}-\d{2}-\d{2}/).nullable().optional(),
+        gender: z.string().nullable().optional(),
+        occupation: z.string().nullable().optional(),
+        employmentStatus: z.string().nullable().optional(),
+        sourceOfFunds: z.string().nullable().optional(),
+        addressStreet: z.string().nullable().optional(),
+        addressCity: z.string().nullable().optional(),
+        addressState: z.string().nullable().optional(),
+        addressLga: z.string().nullable().optional(),
+        kycTier: z.enum(["TIER_0", "TIER_1", "TIER_2"]).optional(),
+        frozen: z.boolean().optional(),
+        frozenReason: z.string().nullable().optional(),
+      })
+      .parse(req.body);
+
+    const existing = await prisma.user.findUnique({ where: { id: userId } });
+    if (!existing) throw new AppError(404, "User not found", "NOT_FOUND");
+
+    if (body.email && body.email.toLowerCase() !== (existing.email ?? "").toLowerCase()) {
+      const clash = await prisma.user.findUnique({ where: { email: body.email.toLowerCase() } });
+      if (clash && clash.id !== userId) {
+        throw new AppError(409, "Email already registered", "EMAIL_EXISTS");
+      }
+    }
+    if (body.phone !== undefined && body.phone) {
+      const phone = body.phone.replace(/\D/g, "");
+      const clash = await prisma.user.findFirst({
+        where: { phone, NOT: { id: userId } },
+      });
+      if (clash) throw new AppError(409, "Phone already registered", "PHONE_EXISTS");
+    }
+
+    const before = {
+      email: existing.email,
+      phone: existing.phone,
+      firstName: existing.firstName,
+      surname: existing.surname,
+      kycTier: existing.kycTier,
+      frozen: existing.frozen,
+    };
+
+    const user = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        ...(body.email != null ? { email: body.email.toLowerCase().trim() } : {}),
+        ...(body.phone !== undefined
+          ? { phone: body.phone ? body.phone.replace(/\D/g, "") : null }
+          : {}),
+        ...(body.firstName != null ? { firstName: body.firstName.trim() } : {}),
+        ...(body.middleName !== undefined
+          ? { middleName: body.middleName?.trim() || null }
+          : {}),
+        ...(body.surname != null ? { surname: body.surname.trim() } : {}),
+        ...(body.accountType != null ? { accountType: body.accountType } : {}),
+        ...(body.businessName !== undefined
+          ? { businessName: body.businessName?.trim() || null }
+          : {}),
+        ...(body.businessRcNumber !== undefined
+          ? { businessRcNumber: body.businessRcNumber?.trim() || null }
+          : {}),
+        ...(body.dateOfBirth !== undefined
+          ? { dateOfBirth: body.dateOfBirth ? new Date(body.dateOfBirth) : null }
+          : {}),
+        ...(body.gender !== undefined ? { gender: body.gender?.trim() || null } : {}),
+        ...(body.occupation !== undefined
+          ? { occupation: body.occupation?.trim() || null }
+          : {}),
+        ...(body.employmentStatus !== undefined
+          ? { employmentStatus: body.employmentStatus?.trim() || null }
+          : {}),
+        ...(body.sourceOfFunds !== undefined
+          ? { sourceOfFunds: body.sourceOfFunds?.trim() || null }
+          : {}),
+        ...(body.addressStreet !== undefined
+          ? { addressStreet: body.addressStreet?.trim() || null }
+          : {}),
+        ...(body.addressCity !== undefined
+          ? { addressCity: body.addressCity?.trim() || null }
+          : {}),
+        ...(body.addressState !== undefined
+          ? { addressState: body.addressState?.trim() || null }
+          : {}),
+        ...(body.addressLga !== undefined
+          ? { addressLga: body.addressLga?.trim() || null }
+          : {}),
+        ...(body.kycTier != null ? { kycTier: body.kycTier } : {}),
+        ...(body.frozen != null ? { frozen: body.frozen } : {}),
+        ...(body.frozenReason !== undefined ? { frozenReason: body.frozenReason } : {}),
+      },
+    });
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "user.admin_profile_update",
+      entityType: "User",
+      entityId: userId,
+      before,
+      after: body,
+    });
+
+    res.json({
+      data: {
+        id: user.id,
+        email: user.email,
+        phone: user.phone,
+        firstName: user.firstName,
+        middleName: user.middleName,
+        surname: user.surname,
+        name: `${user.firstName} ${user.surname}`,
+        accountType: user.accountType,
+        businessName: user.businessName,
+        businessRcNumber: user.businessRcNumber,
+        dateOfBirth: user.dateOfBirth,
+        gender: user.gender,
+        occupation: user.occupation,
+        employmentStatus: user.employmentStatus,
+        sourceOfFunds: user.sourceOfFunds,
+        addressStreet: user.addressStreet,
+        addressCity: user.addressCity,
+        addressState: user.addressState,
+        addressLga: user.addressLga,
+        kycTier: user.kycTier,
+        frozen: user.frozen,
+      },
+    });
+  }),
+);
+
+/** SUPER: upload KYC selfie / address proof for a customer. */
+adminRouter.post(
+  "/users/:userId/kyc/documents",
+  requireAdmin,
+  requireRoles("SUPER"),
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const body = z
+      .object({
+        kind: z.enum(["selfie", "address"]),
+        contentType: z.string().min(3),
+        dataBase64: z.string().min(20),
+      })
+      .parse(req.body);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
+
+    const { saveKycDocument } = await import("../services/uploads.js");
+    const saved = await saveKycDocument({
+      userId,
+      kind: body.kind,
+      contentType: body.contentType,
+      dataBase64: body.dataBase64,
+    });
+
+    const profile = await prisma.kycProfile.upsert({
+      where: { userId },
+      create: {
+        userId,
+        status: "PENDING_REVIEW",
+        ...(body.kind === "selfie"
+          ? { selfieUrl: saved.url, livenessPassed: true }
+          : { addressDocUrl: saved.url }),
+      },
+      update: {
+        ...(body.kind === "selfie"
+          ? { selfieUrl: saved.url, livenessPassed: true }
+          : { addressDocUrl: saved.url }),
+        status: "PENDING_REVIEW",
+      },
+    });
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "kyc.admin_document_upload",
+      entityType: "User",
+      entityId: userId,
+      after: { kind: body.kind, url: saved.url },
+    });
+
+    res.json({
+      data: {
+        kind: body.kind,
+        url: saved.url,
+        status: profile.status,
+        selfieUrl: profile.selfieUrl,
+        addressDocUrl: profile.addressDocUrl,
+      },
+    });
+  }),
+);
+
+/** SUPER: complete / activate KYC for an admin-registered customer. */
+adminRouter.post(
+  "/users/:userId/kyc/activate",
+  requireAdmin,
+  requireRoles("SUPER"),
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const body = z
+      .object({
+        kycTier: z.enum(["TIER_1", "TIER_2"]),
+        bvn: z.string().optional(),
+        nin: z.string().optional(),
+        bvnName: z.string().optional(),
+        ninName: z.string().optional(),
+        unfreeze: z.boolean().default(true),
+      })
+      .parse(req.body);
+
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
+
+    const displayName = `${user.surname.toUpperCase()} ${user.firstName.toUpperCase()}`.trim();
+    await prisma.kycProfile.upsert({
+      where: { userId },
+      create: {
+        userId,
+        status: "APPROVED",
+        bvn: body.bvn?.replace(/\D/g, "") || null,
+        nin: body.nin?.replace(/\D/g, "") || null,
+        bvnName: body.bvnName || (body.kycTier === "TIER_1" ? displayName : null),
+        ninName: body.ninName || (body.kycTier === "TIER_2" ? displayName : null),
+        bvnProviderStatus: body.kycTier === "TIER_1" ? "SUCCESS" : null,
+        ninProviderStatus: body.kycTier === "TIER_2" ? "SUCCESS" : null,
+        livenessPassed: true,
+        reviewedByAdminId: req.adminId,
+        reviewedAt: new Date(),
+      },
+      update: {
+        status: "APPROVED",
+        ...(body.bvn ? { bvn: body.bvn.replace(/\D/g, "") } : {}),
+        ...(body.nin ? { nin: body.nin.replace(/\D/g, "") } : {}),
+        ...(body.bvnName ? { bvnName: body.bvnName } : {}),
+        ...(body.ninName ? { ninName: body.ninName } : {}),
+        bvnProviderStatus: body.kycTier === "TIER_1" || body.kycTier === "TIER_2" ? "SUCCESS" : undefined,
+        ninProviderStatus: body.kycTier === "TIER_2" ? "SUCCESS" : undefined,
+        livenessPassed: true,
+        rejectionReason: null,
+        reviewedByAdminId: req.adminId,
+        reviewedAt: new Date(),
+      },
+    });
+
+    const updated = await prisma.user.update({
+      where: { id: userId },
+      data: {
+        kycTier: body.kycTier,
+        ...(body.unfreeze ? { frozen: false, frozenReason: null } : {}),
+      },
+    });
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "kyc.admin_activate",
+      entityType: "User",
+      entityId: userId,
+      after: { kycTier: body.kycTier, unfreeze: body.unfreeze },
+    });
+
+    res.json({
+      data: {
+        id: updated.id,
+        kycTier: updated.kycTier,
+        frozen: updated.frozen,
+      },
+    });
   }),
 );
 
