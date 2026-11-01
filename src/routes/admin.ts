@@ -5,6 +5,7 @@ import {
   ensureUserCall,
   ensureUserWallet,
   interestForPeriod,
+  placementInterestKobo,
 } from "../services/money.js";
 import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
@@ -843,7 +844,7 @@ adminRouter.get(
     });
     res.json({
       data: rows.map((p) => {
-        const interest = interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays ?? 0);
+        const interest = placementInterestKobo(p);
         return {
           id: p.id,
           name: p.name,
@@ -855,6 +856,7 @@ adminRouter.get(
           expectedInterest: koboToNaira(interest),
           expectedPayout: koboToNaira(p.principalKobo + interest),
           accrued: koboToNaira(p.accruedKobo),
+          interestOverride: p.interestOverrideKobo != null,
           maturityInstruction: p.maturityInstruction,
           startDate: p.startDate,
           maturityDate: p.maturityDate,
@@ -1052,7 +1054,17 @@ adminRouter.post(
       });
     }
 
-    const expectedInterest = interestForPeriod(amountKobo, rateBps, tenorDays);
+    let interestOverrideKobo: bigint | null = null;
+    if (body.expectedPayout != null) {
+      const interestKobo = nairaToKobo(body.expectedPayout) - amountKobo;
+      interestOverrideKobo = interestKobo < 0n ? 0n : interestKobo;
+    } else if (body.expectedInterest != null) {
+      interestOverrideKobo = nairaToKobo(body.expectedInterest);
+    }
+    const expectedInterest =
+      interestOverrideKobo != null
+        ? interestOverrideKobo
+        : interestForPeriod(amountKobo, rateBps, tenorDays);
     const accruedKobo = body.accrued != null ? nairaToKobo(body.accrued) : 0n;
 
     const placement = await prisma.placement.create({
@@ -1069,6 +1081,7 @@ adminRouter.post(
         maturityInstruction: body.maturityInstruction,
         ledgerAccountId: placementAccount.id,
         accruedKobo,
+        interestOverrideKobo,
         ...(body.status ? { status: body.status } : {}),
       },
     });
@@ -1084,6 +1097,7 @@ adminRouter.post(
         startDate: startDate.toISOString(),
         maturityDate: maturityDate.toISOString(),
         rateBps,
+        interestOverrideKobo: interestOverrideKobo != null ? koboToNaira(interestOverrideKobo) : null,
         overrides: hasOverrides,
       },
     });
@@ -1185,13 +1199,19 @@ adminRouter.patch(
     }
 
     let rateBps = placement.rateBps;
-    if (body.ratePct != null) {
-      rateBps = Math.round(body.ratePct * 100);
-    } else if (body.expectedPayout != null) {
+    /** Exact interest from SUPER payout/interest fields — survives rate↔interest integer rounding. */
+    let interestOverrideKobo: bigint | null | undefined = undefined;
+    if (body.expectedPayout != null) {
       const interestKobo = nairaToKobo(body.expectedPayout) - principalKobo;
-      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestKobo < 0n ? 0n : interestKobo);
+      interestOverrideKobo = interestKobo < 0n ? 0n : interestKobo;
+      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestOverrideKobo);
     } else if (body.expectedInterest != null) {
-      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, nairaToKobo(body.expectedInterest));
+      interestOverrideKobo = nairaToKobo(body.expectedInterest);
+      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestOverrideKobo);
+    } else if (body.ratePct != null) {
+      rateBps = Math.round(body.ratePct * 100);
+      // Explicit rate edit: clear override so formula drives expected again.
+      interestOverrideKobo = null;
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -1210,6 +1230,9 @@ adminRouter.patch(
             ? { maturityInstruction: body.maturityInstruction }
             : {}),
           ...(body.accrued != null ? { accruedKobo: nairaToKobo(body.accrued) } : {}),
+          ...(interestOverrideKobo !== undefined
+            ? { interestOverrideKobo }
+            : {}),
         },
       });
 
@@ -1223,7 +1246,7 @@ adminRouter.patch(
       return row;
     });
 
-    const interest = interestForPeriod(updated.principalKobo, updated.rateBps, updated.tenorDays ?? 0);
+    const interest = placementInterestKobo(updated);
 
     await writeAudit({
       actorAdminId: req.adminId,
@@ -1240,6 +1263,10 @@ adminRouter.patch(
         maturityDate: updated.maturityDate,
         status: updated.status,
         accrued: koboToNaira(updated.accruedKobo),
+        interestOverride:
+          updated.interestOverrideKobo != null
+            ? koboToNaira(updated.interestOverrideKobo)
+            : null,
         maturityInstruction: updated.maturityInstruction,
         kind: updated.kind,
       },
@@ -1257,6 +1284,7 @@ adminRouter.patch(
         expectedInterest: koboToNaira(interest),
         expectedPayout: koboToNaira(updated.principalKobo + interest),
         accrued: koboToNaira(updated.accruedKobo),
+        interestOverride: updated.interestOverrideKobo != null,
         maturityInstruction: updated.maturityInstruction,
         startDate: updated.startDate,
         maturityDate: updated.maturityDate,

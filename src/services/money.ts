@@ -127,4 +127,15 @@ export function interestForPeriod(principalKobo: bigint, rateBps: number, days: 
   return (principalKobo * BigInt(rateBps) * BigInt(days)) / (10000n * 365n);
 }
 
+/** Full-tenor interest; honors SUPER admin exact override when set. */
+export function placementInterestKobo(p: {
+  principalKobo: bigint;
+  rateBps: number;
+  tenorDays?: number | null;
+  interestOverrideKobo?: bigint | null;
+}) {
+  if (p.interestOverrideKobo != null) return p.interestOverrideKobo;
+  return interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays ?? 0);
+}
+
 export { makeReference };

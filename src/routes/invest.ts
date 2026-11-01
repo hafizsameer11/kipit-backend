@@ -13,6 +13,7 @@ import {
   ensureUserWallet,
   getWalletBalanceKobo,
   interestForPeriod,
+  placementInterestKobo,
   moveCallToWallet,
   moveWalletToCall,
 } from "../services/money.js";
@@ -366,8 +367,8 @@ investRouter.get(
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
         accrued: koboToNaira(p.accruedKobo),
         expectedInterest:
-          p.tenorDays != null
-            ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+          p.tenorDays != null || p.interestOverrideKobo != null
+            ? koboToNaira(placementInterestKobo(p))
             : null,
         maturityInstruction: p.maturityInstruction,
       })),

@@ -10,7 +10,7 @@ import {
   ensureUserCall,
   ensureUserWallet,
   getWalletBalanceKobo,
-  interestForPeriod,
+  placementInterestKobo,
 } from "../services/money.js";
 
 export const portfolioRouter = Router();
@@ -51,8 +51,8 @@ portfolioRouter.get(
           maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
           accrued: koboToNaira(p.accruedKobo),
           expectedInterest:
-            p.tenorDays != null
-              ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+            p.tenorDays != null || p.interestOverrideKobo != null
+              ? koboToNaira(placementInterestKobo(p))
               : null,
           status: p.status,
         })),
@@ -90,8 +90,8 @@ portfolioRouter.get(
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
         accrued: koboToNaira(p.accruedKobo),
         expectedInterest:
-          p.tenorDays != null
-            ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+          p.tenorDays != null || p.interestOverrideKobo != null
+            ? koboToNaira(placementInterestKobo(p))
             : null,
         status: p.status,
         maturityInstruction: p.maturityInstruction,

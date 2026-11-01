@@ -1,7 +1,11 @@
 import { env, askAiLlmEnabled, openaiBaseUrl } from "../lib/env.js";
 import { prisma } from "../lib/prisma.js";
 import { koboToNaira } from "../lib/crypto.js";
-import { ensureUserCall, getWalletBalanceKobo, interestForPeriod } from "./money.js";
+import {
+  ensureUserCall,
+  getWalletBalanceKobo,
+  placementInterestKobo,
+} from "./money.js";
 
 /** Principal + max(accrued so far, full-tenor expected interest). */
 function maturityExpectedPayoutNaira(p: {
@@ -9,10 +13,9 @@ function maturityExpectedPayoutNaira(p: {
   accruedKobo: bigint;
   rateBps: number;
   tenorDays: number | null;
+  interestOverrideKobo?: bigint | null;
 }) {
-  const tenor = p.tenorDays ?? 0;
-  const interest =
-    tenor > 0 ? interestForPeriod(p.principalKobo, p.rateBps, tenor) : 0n;
+  const interest = placementInterestKobo(p);
   const add = interest > p.accruedKobo ? interest : p.accruedKobo;
   return koboToNaira(p.principalKobo + add);
 }
