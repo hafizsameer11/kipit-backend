@@ -152,4 +152,32 @@ export function placementInterestKobo(p: {
   return interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays ?? 0);
 }
 
+/** Interest earned so far (pro-rata by days held, capped at tenor). */
+export function accruedInterestToDateKobo(
+  p: {
+    principalKobo: bigint;
+    rateBps: number;
+    tenorDays?: number | null;
+    startDate: Date;
+    interestOverrideKobo?: bigint | null;
+    accruedKobo?: bigint | null;
+  },
+  now = new Date(),
+) {
+  const tenor = p.tenorDays ?? 0;
+  const daysHeld = Math.max(
+    0,
+    Math.floor((now.getTime() - p.startDate.getTime()) / 86_400_000),
+  );
+  const held = tenor > 0 ? Math.min(daysHeld, tenor) : daysHeld;
+  let computed: bigint;
+  if (p.interestOverrideKobo != null && tenor > 0) {
+    computed = (p.interestOverrideKobo * BigInt(held)) / BigInt(tenor);
+  } else {
+    computed = interestForPeriod(p.principalKobo, p.rateBps, held);
+  }
+  const stored = p.accruedKobo ?? 0n;
+  return computed > stored ? computed : stored;
+}
+
 export { makeReference };

@@ -12,6 +12,7 @@ import {
   ensureUserCall,
   ensureUserWallet,
   getWalletBalanceKobo,
+  accruedInterestToDateKobo,
   interestForPeriod,
   placementInterestKobo,
   moveCallToWallet,
@@ -365,7 +366,7 @@ investRouter.get(
         // Additive — detail route already had startDate; list parity for history screens.
         startDate: p.startDate.toISOString().slice(0, 10),
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
-        accrued: koboToNaira(p.accruedKobo),
+        accrued: koboToNaira(accruedInterestToDateKobo(p)),
         expectedInterest:
           p.tenorDays != null || p.interestOverrideKobo != null
             ? koboToNaira(placementInterestKobo(p))

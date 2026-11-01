@@ -4,6 +4,7 @@ import {
   ensureSystemAccount,
   ensureUserCall,
   ensureUserWallet,
+  accruedInterestToDateKobo,
   interestForPeriod,
   placementInterestKobo,
 } from "../services/money.js";
@@ -62,15 +63,21 @@ async function userBalances(userId: string) {
   });
   let fixed = 0n;
   let explore = 0n;
+  let accrued = 0n;
   for (const p of placements) {
-    if (p.kind === "EXPLORE") explore += p.principalKobo;
-    else if (p.kind === "FIXED") fixed += p.principalKobo;
+    const earned = accruedInterestToDateKobo(p);
+    accrued += earned;
+    const mark = p.principalKobo + earned;
+    if (p.kind === "EXPLORE") explore += mark;
+    else if (p.kind === "FIXED") fixed += mark;
   }
   return {
     wallet: koboToNaira(wallet.balanceKobo),
     call: koboToNaira(call.balanceKobo),
     fixed: koboToNaira(fixed),
     explore: koboToNaira(explore),
+    /** Sum of accrued interest across active placements (also included in fixed/explore). */
+    accrued: koboToNaira(accrued),
   };
 }
 
@@ -845,6 +852,7 @@ adminRouter.get(
     res.json({
       data: rows.map((p) => {
         const interest = placementInterestKobo(p);
+        const accrued = accruedInterestToDateKobo(p);
         return {
           id: p.id,
           name: p.name,
@@ -855,7 +863,7 @@ adminRouter.get(
           tenorDays: p.tenorDays,
           expectedInterest: koboToNaira(interest),
           expectedPayout: koboToNaira(p.principalKobo + interest),
-          accrued: koboToNaira(p.accruedKobo),
+          accrued: koboToNaira(accrued),
           interestOverride: p.interestOverrideKobo != null,
           maturityInstruction: p.maturityInstruction,
           startDate: p.startDate,

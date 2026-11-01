@@ -11,7 +11,7 @@ import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { hashSecret, koboToNaira, nairaToKobo } from "../lib/crypto.js";
-import { ensureUserCall, ensureUserWallet } from "../services/money.js";
+import { accruedInterestToDateKobo, ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
 import { createUserNotification, notifyAccountAccessChange } from "../services/notify.js";
@@ -72,15 +72,20 @@ async function userBalances(userId: string) {
   });
   let fixed = 0n;
   let explore = 0n;
+  let accrued = 0n;
   for (const p of placements) {
-    if (p.kind === "EXPLORE") explore += p.principalKobo;
-    else fixed += p.principalKobo;
+    const earned = accruedInterestToDateKobo(p);
+    accrued += earned;
+    const mark = p.principalKobo + earned;
+    if (p.kind === "EXPLORE") explore += mark;
+    else fixed += mark;
   }
   return {
     wallet: koboToNaira(wallet.balanceKobo),
     call: koboToNaira(call.balanceKobo),
     fixed: koboToNaira(fixed),
     explore: koboToNaira(explore),
+    accrued: koboToNaira(accrued),
   };
 }
 
