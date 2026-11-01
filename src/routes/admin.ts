@@ -28,10 +28,10 @@ function assertSuperAdmin(req: AdminRequest) {
   }
 }
 
-/** Derive rateBps from principal + tenor + interest (simple interest). */
+/** Derive stored rate from principal + tenor + interest (simple interest). */
 function rateBpsFromInterest(principalKobo: bigint, tenorDays: number, interestKobo: bigint): number {
   if (principalKobo <= 0n || tenorDays <= 0 || interestKobo < 0n) return 0;
-  return Number((interestKobo * 10000n * 365n) / (principalKobo * BigInt(tenorDays)));
+  return Number((interestKobo * 1_000_000n * 365n) / (principalKobo * BigInt(tenorDays)));
 }
 
 function daysBetween(start: Date, end: Date): number {
@@ -851,7 +851,7 @@ adminRouter.get(
           kind: p.kind,
           status: p.status,
           principal: koboToNaira(p.principalKobo),
-          ratePct: p.rateBps / 100,
+          ratePct: p.rateBps / 10000,
           tenorDays: p.tenorDays,
           expectedInterest: koboToNaira(interest),
           expectedPayout: koboToNaira(p.principalKobo + interest),
@@ -1006,7 +1006,7 @@ adminRouter.post(
     }
 
     if (body.ratePct != null) {
-      rateBps = Math.round(body.ratePct * 100);
+      rateBps = Math.round(body.ratePct * 10000);
     } else if (body.expectedPayout != null) {
       const interestKobo = nairaToKobo(body.expectedPayout) - amountKobo;
       rateBps = rateBpsFromInterest(amountKobo, tenorDays, interestKobo < 0n ? 0n : interestKobo);
@@ -1117,7 +1117,7 @@ adminRouter.post(
         name: placement.name,
         kind: placement.kind,
         amount: body.amount,
-        ratePct: rateBps / 100,
+        ratePct: rateBps / 10000,
         tenorDays,
         startDate: startDate.toISOString().slice(0, 10),
         maturityDate: maturityDate.toISOString().slice(0, 10),
@@ -1166,7 +1166,7 @@ adminRouter.patch(
     const before = {
       name: placement.name,
       principal: koboToNaira(placement.principalKobo),
-      ratePct: placement.rateBps / 100,
+      ratePct: placement.rateBps / 10000,
       tenorDays: placement.tenorDays,
       startDate: placement.startDate,
       maturityDate: placement.maturityDate,
@@ -1209,7 +1209,7 @@ adminRouter.patch(
       interestOverrideKobo = nairaToKobo(body.expectedInterest);
       rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestOverrideKobo);
     } else if (body.ratePct != null) {
-      rateBps = Math.round(body.ratePct * 100);
+      rateBps = Math.round(body.ratePct * 10000);
       // Explicit rate edit: clear override so formula drives expected again.
       interestOverrideKobo = null;
     }
@@ -1257,7 +1257,7 @@ adminRouter.patch(
       after: {
         name: updated.name,
         principal: koboToNaira(updated.principalKobo),
-        ratePct: updated.rateBps / 100,
+        ratePct: updated.rateBps / 10000,
         tenorDays: updated.tenorDays,
         startDate: updated.startDate,
         maturityDate: updated.maturityDate,
@@ -1279,7 +1279,7 @@ adminRouter.patch(
         kind: updated.kind,
         status: updated.status,
         principal: koboToNaira(updated.principalKobo),
-        ratePct: updated.rateBps / 100,
+        ratePct: updated.rateBps / 10000,
         tenorDays: updated.tenorDays,
         expectedInterest: koboToNaira(interest),
         expectedPayout: koboToNaira(updated.principalKobo + interest),
@@ -2295,8 +2295,8 @@ adminRouter.get(
         code: r.band.code,
         currentBps: r.previousBps ?? r.band.rateBps,
         proposedBps: r.proposedBps,
-        currentRate: (r.previousBps ?? r.band.rateBps) / 100,
-        proposedRate: r.proposedBps / 100,
+        currentRate: ((r.previousBps ?? r.band.rateBps) / 10000),
+        proposedRate: r.proposedBps / 10000,
         effectiveFrom: r.effectiveFrom,
         reason: r.reason,
         status: r.status,
@@ -2585,7 +2585,7 @@ adminRouter.get(
         name: p.name,
         blurb: p.blurb,
         description: p.description,
-        ratePct: p.rateBps / 100,
+        ratePct: p.rateBps / 10000,
         tenorDays: p.tenorDays,
         minimum: koboToNaira(p.minimumKobo),
         availability: p.availability,
@@ -2637,7 +2637,7 @@ adminRouter.post(
 
     const rateBps =
       body.rateBps ??
-      (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+      (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
     if (rateBps == null) throw new AppError(400, "rateBps or ratePct required", "RATE_REQUIRED");
 
     const slug =
@@ -2676,7 +2676,7 @@ adminRouter.post(
         id: row.id,
         slug: row.slug,
         name: row.name,
-        ratePct: row.rateBps / 100,
+        ratePct: row.rateBps / 10000,
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
@@ -2708,7 +2708,7 @@ adminRouter.patch(
       })
       .parse(req.body);
     const rateBps =
-      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
     const row = await prisma.product.update({
       where: { id: String(req.params.id) },
       data: {
@@ -2736,7 +2736,7 @@ adminRouter.patch(
       data: {
         id: row.id,
         name: row.name,
-        ratePct: row.rateBps / 100,
+        ratePct: row.rateBps / 10000,
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,

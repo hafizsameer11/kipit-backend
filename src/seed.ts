@@ -7,12 +7,12 @@ async function main() {
   console.log("Seeding Kipit…");
 
   const bands = [
-    { code: "CALL", label: "Kipit Call Account", minDays: 0, maxDays: 0, rateBps: 1450 },
-    { code: "1-90", label: "Kipit Starter", minDays: 1, maxDays: 90, rateBps: 1600 },
-    { code: "91-120", label: "Kipit Fixed Income", minDays: 91, maxDays: 120, rateBps: 1750 },
-    { code: "121-180", label: "Kipit Target Savings", minDays: 121, maxDays: 180, rateBps: 1920 },
-    { code: "181-364", label: "Kipit Growth", minDays: 181, maxDays: 364, rateBps: 2050 },
-    { code: "365+", label: "Kipit Vault", minDays: 365, maxDays: null, rateBps: 2150 },
+    { code: "CALL", label: "Kipit Call Account", minDays: 0, maxDays: 0, rateBps: 145_000 },
+    { code: "1-90", label: "Kipit Starter", minDays: 1, maxDays: 90, rateBps: 160_000 },
+    { code: "91-120", label: "Kipit Fixed Income", minDays: 91, maxDays: 120, rateBps: 175_000 },
+    { code: "121-180", label: "Kipit Target Savings", minDays: 121, maxDays: 180, rateBps: 192_000 },
+    { code: "181-364", label: "Kipit Growth", minDays: 181, maxDays: 364, rateBps: 205_000 },
+    { code: "365+", label: "Kipit Vault", minDays: 365, maxDays: null, rateBps: 215_000 },
   ];
 
   for (const b of bands) {
@@ -52,7 +52,7 @@ async function main() {
       name: "364-Day T-Bill",
       blurb: "Federal Government treasury bill.",
       description: "Discount instrument held to maturity.",
-      rateBps: 1880,
+      rateBps: 188_000,
       tenorDays: 364,
       minimumKobo: nairaToKobo(100_000),
       issuer: "DMO / CBN",
@@ -64,7 +64,7 @@ async function main() {
       name: "Prime CP 90",
       blurb: "Short-tenor commercial paper.",
       description: "Investment-grade issuer CP.",
-      rateBps: 1950,
+      rateBps: 195_000,
       tenorDays: 90,
       minimumKobo: nairaToKobo(250_000),
       issuer: "Prime Issuer Plc",
@@ -76,7 +76,7 @@ async function main() {
       name: "Private Note (Large Ticket)",
       blurb: "Adviser-fulfilled structured note.",
       description: "Minimum ₦5m — request access.",
-      rateBps: 2100,
+      rateBps: 210_000,
       tenorDays: 180,
       minimumKobo: nairaToKobo(5_000_000),
       issuer: "Partner Desk",

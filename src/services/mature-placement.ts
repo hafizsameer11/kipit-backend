@@ -302,7 +302,7 @@ export async function maturePlacement(input: {
   const interestNaira = koboToNaira(interest);
 
   if (rolledOver) {
-    const ratePct = (rolledOver.rateBps / 100).toFixed(1);
+    const ratePct = (rolledOver.rateBps / 10000).toFixed(1);
     const matures = rolledOver.maturityDate.toISOString().slice(0, 10);
     await createUserNotification({
       userId: placement.userId,

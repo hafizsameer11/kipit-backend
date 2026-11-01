@@ -78,7 +78,7 @@ meRouter.get(
               ),
               tenorDays: next.tenorDays,
               // Additive — older app/web clients ignore; avoids client join to holdings.
-              ratePct: next.rateBps / 100,
+              ratePct: next.rateBps / 10000,
               startDate: next.startDate.toISOString().slice(0, 10),
               accrued: koboToNaira(next.accruedKobo),
             }
@@ -87,7 +87,7 @@ meRouter.get(
           id: p.id,
           name: p.name,
           amount: koboToNaira(p.principalKobo),
-          ratePct: p.rateBps / 100,
+          ratePct: p.rateBps / 10000,
           tenorDays: p.tenorDays,
           maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
         })),

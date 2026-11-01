@@ -122,9 +122,23 @@ export async function moveCallToWallet(userId: string, amountKobo: bigint, idemp
   });
 }
 
+/**
+ * Stored rate scale: percent × 10_000 (4 d.p.). Example: 22.5123% → 225123.
+ * Legacy rows used percent × 100; migrate with ×100 before reading.
+ */
+export const RATE_PCT_SCALE = 10_000;
+
+export function ratePctFromStored(rateStored: number) {
+  return rateStored / RATE_PCT_SCALE;
+}
+
+export function rateStoredFromPct(ratePct: number) {
+  return Math.round(ratePct * RATE_PCT_SCALE);
+}
+
 export function interestForPeriod(principalKobo: bigint, rateBps: number, days: number) {
-  // simple interest: P * rate * days / 365
-  return (principalKobo * BigInt(rateBps) * BigInt(days)) / (10000n * 365n);
+  // P × (rateBps / 10000)% / 100 × days / 365 = P × rateBps × days / (1_000_000 × 365)
+  return (principalKobo * BigInt(rateBps) * BigInt(days)) / (1_000_000n * 365n);
 }
 
 /** Full-tenor interest; honors SUPER admin exact override when set. */

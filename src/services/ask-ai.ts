@@ -415,8 +415,8 @@ async function runTool(
       name: next.name,
       date: next.maturityDate.toISOString().slice(0, 10),
       amount: koboToNaira(next.principalKobo),
-      rate: `${next.rateBps / 100}% p.a.`,
-      ratePct: next.rateBps / 100,
+      rate: `${next.rateBps / 10000}% p.a.`,
+      ratePct: next.rateBps / 10000,
       daysLeft,
       tenorDays: next.tenorDays,
       expectedPayout: maturityExpectedPayoutNaira(next),
@@ -447,14 +447,14 @@ async function runTool(
         .slice(0, 2)
         .map((b) => ({
           name: b.label,
-          rate: `${b.rateBps / 100}% p.a.`,
+          rate: `${b.rateBps / 10000}% p.a.`,
           tenor: b.maxDays ? `${b.minDays}-${b.maxDays} days` : `${b.minDays}+ days`,
           minimum: 10000,
           to: "/fixed-plans/create",
         })),
       ...products.map((p) => ({
         name: p.name,
-        rate: `${p.rateBps / 100}% p.a.`,
+        rate: `${p.rateBps / 10000}% p.a.`,
         tenor: `${p.tenorDays} days`,
         minimum: koboToNaira(p.minimumKobo),
         to: `/explore/${p.id}/subscribe`,
@@ -659,8 +659,8 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
           name: next.name,
           date: next.maturityDate.toISOString().slice(0, 10),
           amount: koboToNaira(next.principalKobo),
-          rate: `${next.rateBps / 100}% p.a.`,
-          ratePct: next.rateBps / 100,
+          rate: `${next.rateBps / 10000}% p.a.`,
+          ratePct: next.rateBps / 10000,
           daysLeft: Math.max(
             0,
             Math.ceil((next.maturityDate.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
@@ -707,14 +707,14 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
               .slice(0, 2)
               .map((b) => ({
                 name: b.label,
-                rate: `${b.rateBps / 100}% p.a.`,
+                rate: `${b.rateBps / 10000}% p.a.`,
                 tenor: b.maxDays ? `${b.minDays}-${b.maxDays} days` : `${b.minDays}+ days`,
                 minimum: 10000,
                 to: "/fixed-plans/create",
               })),
             ...products.map((p) => ({
               name: p.name,
-              rate: `${p.rateBps / 100}% p.a.`,
+              rate: `${p.rateBps / 10000}% p.a.`,
               tenor: `${p.tenorDays} days`,
               minimum: koboToNaira(p.minimumKobo),
               to: `/explore/${p.id}/subscribe`,
