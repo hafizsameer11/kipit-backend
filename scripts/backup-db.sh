@@ -32,8 +32,9 @@ STAMP="$(date -u +%Y%m%dT%H%M%SZ)"
 OUT="${BACKUP_DIR}/kipit-${STAMP}.sql.gz"
 
 echo "backup-db: writing ${OUT}"
-# URI form works with modern pg_dump (Postgres 13+)
-pg_dump --no-owner --no-acl --format=plain "$DATABASE_URL" | gzip -c >"$OUT"
+# Prisma adds ?schema=public, which pg_dump does not accept.
+DUMP_URL="${DATABASE_URL%%\?*}"
+pg_dump --no-owner --no-acl --format=plain "$DUMP_URL" | gzip -c >"$OUT"
 chmod 600 "$OUT"
 
 # Drop backups older than KEEP_DAYS
