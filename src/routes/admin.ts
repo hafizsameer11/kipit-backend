@@ -4,7 +4,9 @@ import {
   ensureSystemAccount,
   ensureUserCall,
   ensureUserWallet,
+  accruedInterestToDateKobo,
   interestForPeriod,
+  placementInterestKobo,
 } from "../services/money.js";
 import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
@@ -27,10 +29,10 @@ function assertSuperAdmin(req: AdminRequest) {
   }
 }
 
-/** Derive rateBps from principal + tenor + interest (simple interest). */
+/** Derive stored rate from principal + tenor + interest (simple interest). */
 function rateBpsFromInterest(principalKobo: bigint, tenorDays: number, interestKobo: bigint): number {
   if (principalKobo <= 0n || tenorDays <= 0 || interestKobo < 0n) return 0;
-  return Number((interestKobo * 10000n * 365n) / (principalKobo * BigInt(tenorDays)));
+  return Number((interestKobo * 1_000_000n * 365n) / (principalKobo * BigInt(tenorDays)));
 }
 
 function daysBetween(start: Date, end: Date): number {
@@ -61,15 +63,21 @@ async function userBalances(userId: string) {
   });
   let fixed = 0n;
   let explore = 0n;
+  let accrued = 0n;
   for (const p of placements) {
-    if (p.kind === "EXPLORE") explore += p.principalKobo;
-    else if (p.kind === "FIXED") fixed += p.principalKobo;
+    const earned = accruedInterestToDateKobo(p);
+    accrued += earned;
+    const mark = p.principalKobo + earned;
+    if (p.kind === "EXPLORE") explore += mark;
+    else if (p.kind === "FIXED") fixed += mark;
   }
   return {
     wallet: koboToNaira(wallet.balanceKobo),
     call: koboToNaira(call.balanceKobo),
     fixed: koboToNaira(fixed),
     explore: koboToNaira(explore),
+    /** Sum of accrued interest across active placements (also included in fixed/explore). */
+    accrued: koboToNaira(accrued),
   };
 }
 
@@ -388,10 +396,38 @@ adminRouter.get(
       where: { type: "USER_CALL" },
       _sum: { balanceKobo: true },
     });
-    const placements = await prisma.placement.aggregate({
+    const activePlacements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
-      _sum: { principalKobo: true },
+      select: {
+        kind: true,
+        principalKobo: true,
+        rateBps: true,
+        tenorDays: true,
+        startDate: true,
+        interestOverrideKobo: true,
+        accruedKobo: true,
+      },
     });
+    let fixedPrincipal = 0n;
+    let explorePrincipal = 0n;
+    let interestAccruedKobo = 0n;
+    let interestRemainingKobo = 0n;
+    for (const p of activePlacements) {
+      // Call cash sits on USER_CALL ledger; only FIXED / EXPLORE contribute placement principal.
+      if (p.kind === "EXPLORE") explorePrincipal += p.principalKobo;
+      else if (p.kind === "FIXED") fixedPrincipal += p.principalKobo;
+      if (p.kind === "FIXED" || p.kind === "EXPLORE") {
+        const accrued = accruedInterestToDateKobo(p);
+        const full = placementInterestKobo(p);
+        interestAccruedKobo += accrued;
+        const remaining = full > accrued ? full - accrued : 0n;
+        interestRemainingKobo += remaining;
+      }
+    }
+    const walletKobo = wallets._sum.balanceKobo ?? 0n;
+    const callKobo = call._sum.balanceKobo ?? 0n;
+    const principalKobo = walletKobo + callKobo + fixedPrincipal + explorePrincipal;
+    const fumKobo = principalKobo + interestAccruedKobo;
     const users = await prisma.user.count();
     const pendingKyc = await prisma.kycProfile.count({ where: { status: "PENDING_REVIEW" } });
     const pendingWithdrawals = await prisma.withdrawalRequest.count({
@@ -401,27 +437,29 @@ adminRouter.get(
       orderBy: { createdAt: "desc" },
       take: 8,
     });
-    const fum =
-      (wallets._sum.balanceKobo ?? 0n) +
-      (call._sum.balanceKobo ?? 0n) +
-      (placements._sum.principalKobo ?? 0n);
     const showAum = canViewAum(req.adminRole);
 
     res.json({
       data: {
-        fum: showAum ? koboToNaira(fum) : null,
+        /** Aggregate portfolio value = principal + accrued interest to date. */
+        fum: showAum ? koboToNaira(fumKobo) : null,
+        principal: showAum ? koboToNaira(principalKobo) : null,
         canViewAum: showAum,
         users,
         pendingKyc,
         pendingWithdrawals,
-        interestAccrued: 0,
-        interestPayable: 0,
+        interestAccrued: showAum ? koboToNaira(interestAccruedKobo) : 0,
+        /** Interest still to earn/pay through maturity on active plans. */
+        interestPayable: showAum ? koboToNaira(interestRemainingKobo) : 0,
         recentAudit,
         breakdown: showAum
           ? {
-              wallet: koboToNaira(wallets._sum.balanceKobo ?? 0n),
-              call: koboToNaira(call._sum.balanceKobo ?? 0n),
-              placements: koboToNaira(placements._sum.principalKobo ?? 0n),
+              wallet: koboToNaira(walletKobo),
+              call: koboToNaira(callKobo),
+              fixed: koboToNaira(fixedPrincipal),
+              explore: koboToNaira(explorePrincipal),
+              placements: koboToNaira(fixedPrincipal + explorePrincipal),
+              accrued: koboToNaira(interestAccruedKobo),
             }
           : null,
       },
@@ -843,18 +881,20 @@ adminRouter.get(
     });
     res.json({
       data: rows.map((p) => {
-        const interest = interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays ?? 0);
+        const interest = placementInterestKobo(p);
+        const accrued = accruedInterestToDateKobo(p);
         return {
           id: p.id,
           name: p.name,
           kind: p.kind,
           status: p.status,
           principal: koboToNaira(p.principalKobo),
-          ratePct: p.rateBps / 100,
+          ratePct: p.rateBps / 10000,
           tenorDays: p.tenorDays,
           expectedInterest: koboToNaira(interest),
           expectedPayout: koboToNaira(p.principalKobo + interest),
-          accrued: koboToNaira(p.accruedKobo),
+          accrued: koboToNaira(accrued),
+          interestOverride: p.interestOverrideKobo != null,
           maturityInstruction: p.maturityInstruction,
           startDate: p.startDate,
           maturityDate: p.maturityDate,
@@ -1004,7 +1044,7 @@ adminRouter.post(
     }
 
     if (body.ratePct != null) {
-      rateBps = Math.round(body.ratePct * 100);
+      rateBps = Math.round(body.ratePct * 10000);
     } else if (body.expectedPayout != null) {
       const interestKobo = nairaToKobo(body.expectedPayout) - amountKobo;
       rateBps = rateBpsFromInterest(amountKobo, tenorDays, interestKobo < 0n ? 0n : interestKobo);
@@ -1052,7 +1092,17 @@ adminRouter.post(
       });
     }
 
-    const expectedInterest = interestForPeriod(amountKobo, rateBps, tenorDays);
+    let interestOverrideKobo: bigint | null = null;
+    if (body.expectedPayout != null) {
+      const interestKobo = nairaToKobo(body.expectedPayout) - amountKobo;
+      interestOverrideKobo = interestKobo < 0n ? 0n : interestKobo;
+    } else if (body.expectedInterest != null) {
+      interestOverrideKobo = nairaToKobo(body.expectedInterest);
+    }
+    const expectedInterest =
+      interestOverrideKobo != null
+        ? interestOverrideKobo
+        : interestForPeriod(amountKobo, rateBps, tenorDays);
     const accruedKobo = body.accrued != null ? nairaToKobo(body.accrued) : 0n;
 
     const placement = await prisma.placement.create({
@@ -1069,6 +1119,7 @@ adminRouter.post(
         maturityInstruction: body.maturityInstruction,
         ledgerAccountId: placementAccount.id,
         accruedKobo,
+        interestOverrideKobo,
         ...(body.status ? { status: body.status } : {}),
       },
     });
@@ -1084,6 +1135,7 @@ adminRouter.post(
         startDate: startDate.toISOString(),
         maturityDate: maturityDate.toISOString(),
         rateBps,
+        interestOverrideKobo: interestOverrideKobo != null ? koboToNaira(interestOverrideKobo) : null,
         overrides: hasOverrides,
       },
     });
@@ -1103,7 +1155,7 @@ adminRouter.post(
         name: placement.name,
         kind: placement.kind,
         amount: body.amount,
-        ratePct: rateBps / 100,
+        ratePct: rateBps / 10000,
         tenorDays,
         startDate: startDate.toISOString().slice(0, 10),
         maturityDate: maturityDate.toISOString().slice(0, 10),
@@ -1152,7 +1204,7 @@ adminRouter.patch(
     const before = {
       name: placement.name,
       principal: koboToNaira(placement.principalKobo),
-      ratePct: placement.rateBps / 100,
+      ratePct: placement.rateBps / 10000,
       tenorDays: placement.tenorDays,
       startDate: placement.startDate,
       maturityDate: placement.maturityDate,
@@ -1185,13 +1237,19 @@ adminRouter.patch(
     }
 
     let rateBps = placement.rateBps;
-    if (body.ratePct != null) {
-      rateBps = Math.round(body.ratePct * 100);
-    } else if (body.expectedPayout != null) {
+    /** Exact interest from SUPER payout/interest fields — survives rate↔interest integer rounding. */
+    let interestOverrideKobo: bigint | null | undefined = undefined;
+    if (body.expectedPayout != null) {
       const interestKobo = nairaToKobo(body.expectedPayout) - principalKobo;
-      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestKobo < 0n ? 0n : interestKobo);
+      interestOverrideKobo = interestKobo < 0n ? 0n : interestKobo;
+      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestOverrideKobo);
     } else if (body.expectedInterest != null) {
-      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, nairaToKobo(body.expectedInterest));
+      interestOverrideKobo = nairaToKobo(body.expectedInterest);
+      rateBps = rateBpsFromInterest(principalKobo, tenorDays || 1, interestOverrideKobo);
+    } else if (body.ratePct != null) {
+      rateBps = Math.round(body.ratePct * 10000);
+      // Explicit rate edit: clear override so formula drives expected again.
+      interestOverrideKobo = null;
     }
 
     const updated = await prisma.$transaction(async (tx) => {
@@ -1210,6 +1268,9 @@ adminRouter.patch(
             ? { maturityInstruction: body.maturityInstruction }
             : {}),
           ...(body.accrued != null ? { accruedKobo: nairaToKobo(body.accrued) } : {}),
+          ...(interestOverrideKobo !== undefined
+            ? { interestOverrideKobo }
+            : {}),
         },
       });
 
@@ -1223,7 +1284,7 @@ adminRouter.patch(
       return row;
     });
 
-    const interest = interestForPeriod(updated.principalKobo, updated.rateBps, updated.tenorDays ?? 0);
+    const interest = placementInterestKobo(updated);
 
     await writeAudit({
       actorAdminId: req.adminId,
@@ -1234,12 +1295,16 @@ adminRouter.patch(
       after: {
         name: updated.name,
         principal: koboToNaira(updated.principalKobo),
-        ratePct: updated.rateBps / 100,
+        ratePct: updated.rateBps / 10000,
         tenorDays: updated.tenorDays,
         startDate: updated.startDate,
         maturityDate: updated.maturityDate,
         status: updated.status,
         accrued: koboToNaira(updated.accruedKobo),
+        interestOverride:
+          updated.interestOverrideKobo != null
+            ? koboToNaira(updated.interestOverrideKobo)
+            : null,
         maturityInstruction: updated.maturityInstruction,
         kind: updated.kind,
       },
@@ -1252,11 +1317,12 @@ adminRouter.patch(
         kind: updated.kind,
         status: updated.status,
         principal: koboToNaira(updated.principalKobo),
-        ratePct: updated.rateBps / 100,
+        ratePct: updated.rateBps / 10000,
         tenorDays: updated.tenorDays,
         expectedInterest: koboToNaira(interest),
         expectedPayout: koboToNaira(updated.principalKobo + interest),
         accrued: koboToNaira(updated.accruedKobo),
+        interestOverride: updated.interestOverrideKobo != null,
         maturityInstruction: updated.maturityInstruction,
         startDate: updated.startDate,
         maturityDate: updated.maturityDate,
@@ -2267,8 +2333,8 @@ adminRouter.get(
         code: r.band.code,
         currentBps: r.previousBps ?? r.band.rateBps,
         proposedBps: r.proposedBps,
-        currentRate: (r.previousBps ?? r.band.rateBps) / 100,
-        proposedRate: r.proposedBps / 100,
+        currentRate: ((r.previousBps ?? r.band.rateBps) / 10000),
+        proposedRate: r.proposedBps / 10000,
         effectiveFrom: r.effectiveFrom,
         reason: r.reason,
         status: r.status,
@@ -2557,7 +2623,7 @@ adminRouter.get(
         name: p.name,
         blurb: p.blurb,
         description: p.description,
-        ratePct: p.rateBps / 100,
+        ratePct: p.rateBps / 10000,
         tenorDays: p.tenorDays,
         minimum: koboToNaira(p.minimumKobo),
         availability: p.availability,
@@ -2609,7 +2675,7 @@ adminRouter.post(
 
     const rateBps =
       body.rateBps ??
-      (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+      (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
     if (rateBps == null) throw new AppError(400, "rateBps or ratePct required", "RATE_REQUIRED");
 
     const slug =
@@ -2648,7 +2714,7 @@ adminRouter.post(
         id: row.id,
         slug: row.slug,
         name: row.name,
-        ratePct: row.rateBps / 100,
+        ratePct: row.rateBps / 10000,
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
@@ -2680,7 +2746,7 @@ adminRouter.patch(
       })
       .parse(req.body);
     const rateBps =
-      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
     const row = await prisma.product.update({
       where: { id: String(req.params.id) },
       data: {
@@ -2708,7 +2774,7 @@ adminRouter.patch(
       data: {
         id: row.id,
         name: row.name,
-        ratePct: row.rateBps / 100,
+        ratePct: row.rateBps / 10000,
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,

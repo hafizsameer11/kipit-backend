@@ -48,7 +48,7 @@ export async function runMaturityEngine() {
     const valueCutoffAt = lagosHmOnDateUtc(yesterdayKey, valueCutoffHm);
 
     const callBand = await prisma.rateBand.findFirst({ where: { code: "CALL" } });
-    const rateBps = callBand?.rateBps ?? 1450;
+    const rateBps = callBand?.rateBps ?? 145_000;
     const callAccounts = await prisma.ledgerAccount.findMany({
       where: { type: "USER_CALL", balanceKobo: { gt: 0 } },
     });

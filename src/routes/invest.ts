@@ -12,7 +12,9 @@ import {
   ensureUserCall,
   ensureUserWallet,
   getWalletBalanceKobo,
+  accruedInterestToDateKobo,
   interestForPeriod,
+  placementInterestKobo,
   moveCallToWallet,
   moveWalletToCall,
 } from "../services/money.js";
@@ -87,7 +89,7 @@ investRouter.get(
         minDays: b.minDays,
         maxDays: b.maxDays,
         rateBps: b.rateBps,
-        ratePct: b.rateBps / 100,
+        ratePct: b.rateBps / 10000,
         minimum: minimumForBand(b.code, b.minDays),
       })),
     });
@@ -100,7 +102,7 @@ investRouter.get(
   asyncHandler(async (req: AuthRequest, res) => {
     const call = await ensureUserCall(req.userId!);
     const callBand = await prisma.rateBand.findFirst({ where: { code: "CALL" } });
-    const rateBps = callBand?.rateBps ?? 1450;
+    const rateBps = callBand?.rateBps ?? 145_000;
     const { getOpsLimits } = await import("../services/system-settings.js");
     const ops = await getOpsLimits();
     res.json({
@@ -108,7 +110,7 @@ investRouter.get(
         balance: koboToNaira(call.balanceKobo),
         balanceKobo: call.balanceKobo.toString(),
         rateBps,
-        ratePct: rateBps / 100,
+        ratePct: rateBps / 10000,
         minimum: ops.minCallDeposit,
         liquidity: "Withdraw anytime",
       },
@@ -223,7 +225,7 @@ investRouter.post(
         amount: body.amount,
         tenorDays: body.tenorDays,
         rateBps: band.rateBps,
-        ratePct: band.rateBps / 100,
+        ratePct: band.rateBps / 10000,
         expectedInterest: koboToNaira(interest),
         expectedPayout: koboToNaira(principal + interest),
         maturityDate: maturity.toISOString().slice(0, 10),
@@ -332,7 +334,7 @@ investRouter.post(
         id: placement.id,
         name: placement.name,
         amount: body.amount,
-        ratePct: band.rateBps / 100,
+        ratePct: band.rateBps / 10000,
         tenorDays: body.tenorDays,
         startDate: value.valueDate,
         maturityDate: maturityDate.toISOString().slice(0, 10),
@@ -359,15 +361,15 @@ investRouter.get(
         name: p.name,
         status: p.status,
         principal: koboToNaira(p.principalKobo),
-        ratePct: p.rateBps / 100,
+        ratePct: p.rateBps / 10000,
         tenorDays: p.tenorDays,
         // Additive — detail route already had startDate; list parity for history screens.
         startDate: p.startDate.toISOString().slice(0, 10),
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
-        accrued: koboToNaira(p.accruedKobo),
+        accrued: koboToNaira(accruedInterestToDateKobo(p)),
         expectedInterest:
-          p.tenorDays != null
-            ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+          p.tenorDays != null || p.interestOverrideKobo != null
+            ? koboToNaira(placementInterestKobo(p))
             : null,
         maturityInstruction: p.maturityInstruction,
       })),

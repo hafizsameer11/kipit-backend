@@ -318,8 +318,8 @@ export async function sendRateApprovalAlert(input: {
   });
   if (!recipients.length) return { sent: 0 };
 
-  const proposed = `${(input.proposedBps / 100).toFixed(2)}%`;
-  const previous = `${(input.previousBps / 100).toFixed(2)}%`;
+  const proposed = `${(input.proposedBps / 10000).toFixed(4)}%`;
+  const previous = `${(input.previousBps / 10000).toFixed(4)}%`;
   const subject = `Rate proposal awaiting approval · ${input.bandName}`;
   const text = [
     "Rate change proposal",

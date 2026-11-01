@@ -122,9 +122,62 @@ export async function moveCallToWallet(userId: string, amountKobo: bigint, idemp
   });
 }
 
+/**
+ * Stored rate scale: percent × 10_000 (4 d.p.). Example: 22.5123% → 225123.
+ * Legacy rows used percent × 100; migrate with ×100 before reading.
+ */
+export const RATE_PCT_SCALE = 10_000;
+
+export function ratePctFromStored(rateStored: number) {
+  return rateStored / RATE_PCT_SCALE;
+}
+
+export function rateStoredFromPct(ratePct: number) {
+  return Math.round(ratePct * RATE_PCT_SCALE);
+}
+
 export function interestForPeriod(principalKobo: bigint, rateBps: number, days: number) {
-  // simple interest: P * rate * days / 365
-  return (principalKobo * BigInt(rateBps) * BigInt(days)) / (10000n * 365n);
+  // P × (rateBps / 10000)% / 100 × days / 365 = P × rateBps × days / (1_000_000 × 365)
+  return (principalKobo * BigInt(rateBps) * BigInt(days)) / (1_000_000n * 365n);
+}
+
+/** Full-tenor interest; honors SUPER admin exact override when set. */
+export function placementInterestKobo(p: {
+  principalKobo: bigint;
+  rateBps: number;
+  tenorDays?: number | null;
+  interestOverrideKobo?: bigint | null;
+}) {
+  if (p.interestOverrideKobo != null) return p.interestOverrideKobo;
+  return interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays ?? 0);
+}
+
+/** Interest earned so far (pro-rata by days held, capped at tenor). */
+export function accruedInterestToDateKobo(
+  p: {
+    principalKobo: bigint;
+    rateBps: number;
+    tenorDays?: number | null;
+    startDate: Date;
+    interestOverrideKobo?: bigint | null;
+    accruedKobo?: bigint | null;
+  },
+  now = new Date(),
+) {
+  const tenor = p.tenorDays ?? 0;
+  const daysHeld = Math.max(
+    0,
+    Math.floor((now.getTime() - p.startDate.getTime()) / 86_400_000),
+  );
+  const held = tenor > 0 ? Math.min(daysHeld, tenor) : daysHeld;
+  let computed: bigint;
+  if (p.interestOverrideKobo != null && tenor > 0) {
+    computed = (p.interestOverrideKobo * BigInt(held)) / BigInt(tenor);
+  } else {
+    computed = interestForPeriod(p.principalKobo, p.rateBps, held);
+  }
+  const stored = p.accruedKobo ?? 0n;
+  return computed > stored ? computed : stored;
 }
 
 export { makeReference };

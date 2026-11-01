@@ -7,10 +7,11 @@ import { prisma } from "../lib/prisma.js";
 import { koboToNaira } from "../lib/crypto.js";
 import { asProductDetails } from "../lib/product-details.js";
 import {
+  accruedInterestToDateKobo,
   ensureUserCall,
   ensureUserWallet,
   getWalletBalanceKobo,
-  interestForPeriod,
+  placementInterestKobo,
 } from "../services/money.js";
 
 export const portfolioRouter = Router();
@@ -27,8 +28,10 @@ portfolioRouter.get(
 
     const fixed = placements.filter((p) => p.kind === "FIXED");
     const explore = placements.filter((p) => p.kind === "EXPLORE");
-    const fixedTotal = fixed.reduce((s, p) => s + p.principalKobo, 0n);
-    const exploreTotal = explore.reduce((s, p) => s + p.principalKobo, 0n);
+    const markToMarket = (p: (typeof placements)[number]) =>
+      p.principalKobo + accruedInterestToDateKobo(p);
+    const fixedTotal = fixed.reduce((s, p) => s + markToMarket(p), 0n);
+    const exploreTotal = explore.reduce((s, p) => s + markToMarket(p), 0n);
     const total = wallet.balanceKobo + call.balanceKobo + fixedTotal + exploreTotal;
 
     res.json({
@@ -45,14 +48,14 @@ portfolioRouter.get(
           kind: p.kind,
           name: p.name,
           principal: koboToNaira(p.principalKobo),
-          ratePct: p.rateBps / 100,
+          ratePct: p.rateBps / 10000,
           tenorDays: p.tenorDays,
           startDate: p.startDate.toISOString().slice(0, 10),
           maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
-          accrued: koboToNaira(p.accruedKobo),
+          accrued: koboToNaira(accruedInterestToDateKobo(p)),
           expectedInterest:
-            p.tenorDays != null
-              ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+            p.tenorDays != null || p.interestOverrideKobo != null
+              ? koboToNaira(placementInterestKobo(p))
               : null,
           status: p.status,
         })),
@@ -84,14 +87,14 @@ portfolioRouter.get(
         kind: p.kind,
         name: p.name,
         principal: koboToNaira(p.principalKobo),
-        ratePct: p.rateBps / 100,
+        ratePct: p.rateBps / 10000,
         tenorDays: p.tenorDays,
         startDate: p.startDate.toISOString().slice(0, 10),
         maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
-        accrued: koboToNaira(p.accruedKobo),
+        accrued: koboToNaira(accruedInterestToDateKobo(p)),
         expectedInterest:
-          p.tenorDays != null
-            ? koboToNaira(interestForPeriod(p.principalKobo, p.rateBps, p.tenorDays))
+          p.tenorDays != null || p.interestOverrideKobo != null
+            ? koboToNaira(placementInterestKobo(p))
             : null,
         status: p.status,
         maturityInstruction: p.maturityInstruction,

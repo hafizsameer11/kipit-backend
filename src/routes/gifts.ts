@@ -74,7 +74,7 @@ function mapGiftRow(
     phone: contact,
     product: g.placement?.name ?? "Gift investment",
     tenor: `${g.placement?.tenorDays ?? g.tenorDays} days`,
-    rate: g.placement ? `${(g.placement.rateBps / 100).toFixed(2)}%` : "—",
+    rate: g.placement ? `${(g.placement.rateBps / 10000).toFixed(4)}%` : "—",
     amount: koboToNaira(g.amountKobo),
     message: g.message ?? "",
     sentDate: g.createdAt.toISOString().slice(0, 10),
@@ -85,7 +85,7 @@ function mapGiftRow(
     expectedPayout: g.placement
       ? koboToNaira(g.placement.principalKobo + g.placement.accruedKobo)
       : koboToNaira(
-          g.amountKobo + interestForPeriod(g.amountKobo, 1400, g.tenorDays || 90),
+          g.amountKobo + interestForPeriod(g.amountKobo, 140_000, g.tenorDays || 90),
         ),
     claimCode: g.claimCode,
     claimLink: giftClaimLink(g.claimCode),
@@ -109,14 +109,14 @@ giftsRouter.get(
         (b) =>
           gift.tenorDays >= b.minDays && (b.maxDays == null || gift.tenorDays <= b.maxDays),
       ) ?? bands.find((b) => b.code !== "CALL");
-    const rateBps = gift.placement?.rateBps ?? band?.rateBps ?? 1400;
+    const rateBps = gift.placement?.rateBps ?? band?.rateBps ?? 140_000;
     res.json({
       data: {
         ...publicGiftPreview(gift),
         expectedInterest: koboToNaira(
           interestForPeriod(gift.amountKobo, rateBps, gift.tenorDays || 90),
         ),
-        ratePct: rateBps / 100,
+        ratePct: rateBps / 10000,
       },
     });
   }),

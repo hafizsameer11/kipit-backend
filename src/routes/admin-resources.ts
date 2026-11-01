@@ -11,7 +11,7 @@ import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { hashSecret, koboToNaira, nairaToKobo } from "../lib/crypto.js";
-import { ensureUserCall, ensureUserWallet } from "../services/money.js";
+import { accruedInterestToDateKobo, ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
 import { createUserNotification, notifyAccountAccessChange } from "../services/notify.js";
@@ -72,15 +72,20 @@ async function userBalances(userId: string) {
   });
   let fixed = 0n;
   let explore = 0n;
+  let accrued = 0n;
   for (const p of placements) {
-    if (p.kind === "EXPLORE") explore += p.principalKobo;
-    else fixed += p.principalKobo;
+    const earned = accruedInterestToDateKobo(p);
+    accrued += earned;
+    const mark = p.principalKobo + earned;
+    if (p.kind === "EXPLORE") explore += mark;
+    else fixed += mark;
   }
   return {
     wallet: koboToNaira(wallet.balanceKobo),
     call: koboToNaira(call.balanceKobo),
     fixed: koboToNaira(fixed),
     explore: koboToNaira(explore),
+    accrued: koboToNaira(accrued),
   };
 }
 
@@ -185,7 +190,7 @@ adminResourcesRouter.get(
         kind: p.kind,
         status: p.status,
         principal: koboToNaira(p.principalKobo),
-        ratePct: p.rateBps / 100,
+        ratePct: p.rateBps / 10000,
         maturityDate: p.maturityDate,
         createdAt: p.createdAt,
       })),
@@ -386,8 +391,8 @@ adminResourcesRouter.get(
         code: r.band.code,
         currentBps: r.previousBps ?? r.band.rateBps,
         proposedBps: r.proposedBps,
-        currentRate: (r.previousBps ?? r.band.rateBps) / 100,
-        proposedRate: r.proposedBps / 100,
+        currentRate: ((r.previousBps ?? r.band.rateBps) / 10000),
+        proposedRate: r.proposedBps / 10000,
         effectiveFrom: r.effectiveFrom,
         reason: r.reason,
         status: r.status,
@@ -695,7 +700,7 @@ adminResourcesRouter.get(
         name: p.name,
         blurb: p.blurb,
         description: p.description,
-        ratePct: p.rateBps / 100,
+        ratePct: p.rateBps / 10000,
         tenorDays: p.tenorDays,
         minimum: koboToNaira(p.minimumKobo),
         availability: p.availability,
@@ -747,7 +752,7 @@ adminResourcesRouter.post(
 
     const rateBps =
       body.rateBps ??
-      (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+      (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
     if (rateBps == null) throw new AppError(400, "rateBps or ratePct required", "RATE_REQUIRED");
 
     const slug =
@@ -788,7 +793,7 @@ adminResourcesRouter.post(
         id: row.id,
         slug: row.slug,
         name: row.name,
-        ratePct: row.rateBps / 100,
+        ratePct: row.rateBps / 10000,
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
@@ -820,7 +825,7 @@ adminResourcesRouter.patch(
       })
       .parse(req.body);
     const rateBps =
-      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 100) : undefined);
+      body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
     const row = await prisma.product.update({
       where: { id: String(req.params.id) },
       data: {
@@ -849,7 +854,7 @@ adminResourcesRouter.patch(
       data: {
         id: row.id,
         name: row.name,
-        ratePct: row.rateBps / 100,
+        ratePct: row.rateBps / 10000,
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
@@ -1736,7 +1741,7 @@ adminResourcesRouter.get(
           product: p.name,
           reference: p.id,
           principal: koboToNaira(p.principalKobo),
-          rate: p.rateBps / 100,
+          rate: p.rateBps / 10000,
           tenorDays: p.tenorDays ?? 0,
           startDate: p.startDate.toISOString().slice(0, 10),
           maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? "",
@@ -1804,7 +1809,7 @@ adminResourcesRouter.post(
       body.type === "principal"
         ? String(koboToNaira(placement.principalKobo))
         : body.type === "rate"
-          ? `${(placement.rateBps / 100).toFixed(2)}%`
+          ? `${(placement.rateBps / 10000).toFixed(2)}%`
           : body.type === "tenor"
             ? `${placement.tenorDays ?? 0} days`
             : body.type === "maturity"
@@ -1880,7 +1885,7 @@ adminResourcesRouter.post(
         data.principalKobo = nairaToKobo(Number(String(row.toValue).replace(/[₦,\s]/g, "")));
       }
       if (row.type === "rate") {
-        data.rateBps = Math.round(Number(String(row.toValue).replace(/%/g, "").trim()) * 100);
+        data.rateBps = Math.round(Number(String(row.toValue).replace(/%/g, "").trim()) * 10000);
       }
       if (row.type === "tenor") {
         data.tenorDays = Number(String(row.toValue).replace(/days/gi, "").trim());
@@ -2004,7 +2009,7 @@ adminResourcesRouter.get(
         const maturity = p.maturityDate ?? now;
         const window = maturity <= in7 ? "week" : "month";
         const interest =
-          (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 10000n;
+          (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 1000000n;
         const expected = p.principalKobo + interest;
         return {
           id: p.id,
@@ -2340,7 +2345,7 @@ adminResourcesRouter.get(
       const interest =
         p.status === "MATURED" && p.accruedKobo > 0n
           ? p.accruedKobo
-          : (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 10000n;
+          : (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 1000000n;
       const expected = p.principalKobo + interest;
       const bucket = buckets.find(
         (b) => p.maturityDate! >= b.start && p.maturityDate! <= b.end,
@@ -2404,7 +2409,7 @@ adminResourcesRouter.get(
       data: Object.entries(buckets).map(([band, b]) => ({
         band,
         value: koboToNaira(b.value),
-        rate: b.count ? `${(b.rateBps / b.count / 100).toFixed(1)}%` : "—",
+        rate: b.count ? `${(b.rateBps / b.count / 10000).toFixed(4)}%` : "—",
       })),
     });
   }),

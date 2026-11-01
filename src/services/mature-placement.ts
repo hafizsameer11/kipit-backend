@@ -10,6 +10,7 @@ import {
   ensureUserCall,
   ensureUserWallet,
   interestForPeriod,
+  placementInterestKobo,
 } from "./money.js";
 import { postJournal } from "./ledger.js";
 import { createUserNotification } from "./notify.js";
@@ -186,7 +187,7 @@ export async function maturePlacement(input: {
   }
 
   const tenorDays = placement.tenorDays ?? 0;
-  const interest = interestForPeriod(placement.principalKobo, placement.rateBps, tenorDays);
+  const interest = placementInterestKobo(placement);
   const payout = placement.principalKobo + interest;
   const early = Boolean(input.early);
   const now = new Date();
@@ -301,7 +302,7 @@ export async function maturePlacement(input: {
   const interestNaira = koboToNaira(interest);
 
   if (rolledOver) {
-    const ratePct = (rolledOver.rateBps / 100).toFixed(1);
+    const ratePct = (rolledOver.rateBps / 10000).toFixed(4);
     const matures = rolledOver.maturityDate.toISOString().slice(0, 10);
     await createUserNotification({
       userId: placement.userId,

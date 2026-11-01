@@ -147,7 +147,7 @@ export async function claimGiftForUser(
         placementId: gift.placementId,
         amount: koboToNaira(gift.amountKobo),
         tenorDays: gift.tenorDays,
-        ratePct: p ? p.rateBps / 100 : 0,
+        ratePct: p ? p.rateBps / 10000 : 0,
         maturityDate: p?.maturityDate?.toISOString().slice(0, 10) ?? "—",
       };
     }
@@ -259,7 +259,7 @@ export async function claimGiftForUser(
     placementId: placement.id,
     amount: koboToNaira(gift.amountKobo),
     tenorDays,
-    ratePct: band.rateBps / 100,
+    ratePct: band.rateBps / 10000,
     maturityDate: maturityDate.toISOString().slice(0, 10),
   };
 }

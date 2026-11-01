@@ -385,6 +385,8 @@ model Placement {
   status              PlacementStatus     @default(ACTIVE)
   maturityInstruction MaturityInstruction @default(WALLET)
   accruedKobo         BigInt              @default(0)
+  /// SUPER admin exact interest (kobo). When set, expected/maturity use this instead of rate×tenor math.
+  interestOverrideKobo BigInt?
   ledgerAccountId     String?
   goalKobo            BigInt?
   isGift              Boolean             @default(false)
