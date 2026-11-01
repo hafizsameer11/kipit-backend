@@ -396,10 +396,38 @@ adminRouter.get(
       where: { type: "USER_CALL" },
       _sum: { balanceKobo: true },
     });
-    const placements = await prisma.placement.aggregate({
+    const activePlacements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
-      _sum: { principalKobo: true },
+      select: {
+        kind: true,
+        principalKobo: true,
+        rateBps: true,
+        tenorDays: true,
+        startDate: true,
+        interestOverrideKobo: true,
+        accruedKobo: true,
+      },
     });
+    let fixedPrincipal = 0n;
+    let explorePrincipal = 0n;
+    let interestAccruedKobo = 0n;
+    let interestRemainingKobo = 0n;
+    for (const p of activePlacements) {
+      // Call cash sits on USER_CALL ledger; only FIXED / EXPLORE contribute placement principal.
+      if (p.kind === "EXPLORE") explorePrincipal += p.principalKobo;
+      else if (p.kind === "FIXED") fixedPrincipal += p.principalKobo;
+      if (p.kind === "FIXED" || p.kind === "EXPLORE") {
+        const accrued = accruedInterestToDateKobo(p);
+        const full = placementInterestKobo(p);
+        interestAccruedKobo += accrued;
+        const remaining = full > accrued ? full - accrued : 0n;
+        interestRemainingKobo += remaining;
+      }
+    }
+    const walletKobo = wallets._sum.balanceKobo ?? 0n;
+    const callKobo = call._sum.balanceKobo ?? 0n;
+    const principalKobo = walletKobo + callKobo + fixedPrincipal + explorePrincipal;
+    const fumKobo = principalKobo + interestAccruedKobo;
     const users = await prisma.user.count();
     const pendingKyc = await prisma.kycProfile.count({ where: { status: "PENDING_REVIEW" } });
     const pendingWithdrawals = await prisma.withdrawalRequest.count({
@@ -409,27 +437,29 @@ adminRouter.get(
       orderBy: { createdAt: "desc" },
       take: 8,
     });
-    const fum =
-      (wallets._sum.balanceKobo ?? 0n) +
-      (call._sum.balanceKobo ?? 0n) +
-      (placements._sum.principalKobo ?? 0n);
     const showAum = canViewAum(req.adminRole);
 
     res.json({
       data: {
-        fum: showAum ? koboToNaira(fum) : null,
+        /** Aggregate portfolio value = principal + accrued interest to date. */
+        fum: showAum ? koboToNaira(fumKobo) : null,
+        principal: showAum ? koboToNaira(principalKobo) : null,
         canViewAum: showAum,
         users,
         pendingKyc,
         pendingWithdrawals,
-        interestAccrued: 0,
-        interestPayable: 0,
+        interestAccrued: showAum ? koboToNaira(interestAccruedKobo) : 0,
+        /** Interest still to earn/pay through maturity on active plans. */
+        interestPayable: showAum ? koboToNaira(interestRemainingKobo) : 0,
         recentAudit,
         breakdown: showAum
           ? {
-              wallet: koboToNaira(wallets._sum.balanceKobo ?? 0n),
-              call: koboToNaira(call._sum.balanceKobo ?? 0n),
-              placements: koboToNaira(placements._sum.principalKobo ?? 0n),
+              wallet: koboToNaira(walletKobo),
+              call: koboToNaira(callKobo),
+              fixed: koboToNaira(fixedPrincipal),
+              explore: koboToNaira(explorePrincipal),
+              placements: koboToNaira(fixedPrincipal + explorePrincipal),
+              accrued: koboToNaira(interestAccruedKobo),
             }
           : null,
       },
