@@ -119,6 +119,13 @@ enum TicketStatus {
   CLOSED
 }
 
+enum AccountDeletionStatus {
+  SUBMITTED
+  PROCESSING
+  REJECTED
+  DELETED
+}
+
 model User {
   id               String    @id @default(cuid())
   email            String?   @unique
@@ -178,6 +185,26 @@ model User {
   notificationPrefs NotificationPref?
   pushDevices      PushDevice[]
   feedViews        FeedCardView[]
+  accountDeletions AccountDeletionRequest[]
+}
+
+model AccountDeletionRequest {
+  id                 String                 @id @default(cuid())
+  userId             String
+  user               User                   @relation(fields: [userId], references: [id], onDelete: Cascade)
+  reasonCode         String
+  reasonDetail       String?
+  status             AccountDeletionStatus  @default(SUBMITTED)
+  rejectionReason    String?
+  scheduledPurgeAt   DateTime
+  processedByAdminId String?
+  processedAt        DateTime?
+  deletedAt          DateTime?
+  createdAt          DateTime               @default(now())
+  updatedAt          DateTime               @updatedAt
+
+  @@index([status])
+  @@index([userId, status])
 }
 
 /** Expo / FCM push tokens registered by the mobile app. */
