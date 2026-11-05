@@ -2049,6 +2049,199 @@ adminRouter.get(
 );
 
 adminRouter.get(
+  "/account-deletions",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const status = String(req.query.status ?? "").toUpperCase();
+    const where =
+      status && ["SUBMITTED", "PROCESSING", "REJECTED", "DELETED"].includes(status)
+        ? { status: status as "SUBMITTED" | "PROCESSING" | "REJECTED" | "DELETED" }
+        : {};
+    const rows = await prisma.accountDeletionRequest.findMany({
+      where,
+      include: { user: true },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+    const { serializeDeletionRequest } = await import("../services/account-deletion.js");
+    const { ACCOUNT_DELETION_REASON_LABELS } = await import("../lib/account-deletion.js");
+    res.json({
+      data: rows.map((r) => ({
+        ...serializeDeletionRequest(r),
+        user: {
+          id: r.user.id,
+          name: `${r.user.firstName} ${r.user.surname}`,
+          email: r.user.email,
+          phone: r.user.phone,
+          frozen: r.user.frozen,
+          kycTier: r.user.kycTier,
+        },
+        reasonLabel:
+          ACCOUNT_DELETION_REASON_LABELS[
+            r.reasonCode as keyof typeof ACCOUNT_DELETION_REASON_LABELS
+          ] ?? r.reasonCode,
+      })),
+    });
+  }),
+);
+
+adminRouter.get(
+  "/account-deletions/:id",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const r = await prisma.accountDeletionRequest.findUnique({
+      where: { id: String(req.params.id) },
+      include: { user: true },
+    });
+    if (!r) throw new AppError(404, "Deletion request not found", "NOT_FOUND");
+    const balances = await userBalances(r.userId);
+    const activePlacements = await prisma.placement.count({
+      where: { userId: r.userId, status: "ACTIVE", kind: { in: ["FIXED", "EXPLORE"] } },
+    });
+    const pendingWithdrawals = await prisma.withdrawalRequest.count({
+      where: { userId: r.userId, status: "PROCESSING" },
+    });
+    const { serializeDeletionRequest } = await import("../services/account-deletion.js");
+    res.json({
+      data: {
+        ...serializeDeletionRequest(r),
+        user: {
+          id: r.user.id,
+          name: `${r.user.firstName} ${r.user.surname}`,
+          email: r.user.email,
+          phone: r.user.phone,
+          frozen: r.user.frozen,
+          frozenReason: r.user.frozenReason,
+          kycTier: r.user.kycTier,
+          createdAt: r.user.createdAt,
+        },
+        balances,
+        activePlacements,
+        pendingWithdrawals,
+        purgeEligible: Date.now() >= r.scheduledPurgeAt.getTime(),
+      },
+    });
+  }),
+);
+
+adminRouter.patch(
+  "/account-deletions/:id",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const body = z
+      .object({
+        status: z.enum(["PROCESSING", "REJECTED", "DELETED"]),
+        rejectionReason: z.string().trim().min(4).max(2000).optional(),
+      })
+      .parse(req.body);
+
+    const row = await prisma.accountDeletionRequest.findUniqueOrThrow({
+      where: { id: String(req.params.id) },
+    });
+    const {
+      assertCanTransition,
+      softAnonymizeUser,
+      serializeDeletionRequest,
+    } = await import("../services/account-deletion.js");
+
+    assertCanTransition(row.status, body.status);
+
+    if (body.status === "REJECTED") {
+      if (!body.rejectionReason) {
+        throw new AppError(400, "Rejection reason is required", "REASON_REQUIRED");
+      }
+      const updated = await prisma.accountDeletionRequest.update({
+        where: { id: row.id },
+        data: {
+          status: "REJECTED",
+          rejectionReason: body.rejectionReason,
+          processedAt: new Date(),
+          processedByAdminId: req.adminId,
+        },
+      });
+      await notifyCustomer({
+        userId: row.userId,
+        title: "Deletion request declined",
+        body: body.rejectionReason,
+        href: "/settings/delete-account",
+        pushKind: "security",
+      }).catch(() => undefined);
+      await writeAudit({
+        actorAdminId: req.adminId,
+        action: "account_deletion.rejected",
+        entityType: "AccountDeletionRequest",
+        entityId: row.id,
+        after: { reason: body.rejectionReason },
+      });
+      res.json({ data: serializeDeletionRequest(updated) });
+      return;
+    }
+
+    if (body.status === "PROCESSING") {
+      const updated = await prisma.accountDeletionRequest.update({
+        where: { id: row.id },
+        data: {
+          status: "PROCESSING",
+          processedAt: new Date(),
+          processedByAdminId: req.adminId,
+        },
+      });
+      await notifyCustomer({
+        userId: row.userId,
+        title: "Deletion request in review",
+        body: "Our team is reviewing your account deletion request and completing checks.",
+        href: "/settings/delete-account",
+        pushKind: "security",
+      }).catch(() => undefined);
+      await writeAudit({
+        actorAdminId: req.adminId,
+        action: "account_deletion.processing",
+        entityType: "AccountDeletionRequest",
+        entityId: row.id,
+      });
+      res.json({ data: serializeDeletionRequest(updated) });
+      return;
+    }
+
+    // DELETED — soft anonymize after 30-day hold + balance checks
+    if (Date.now() < row.scheduledPurgeAt.getTime()) {
+      throw new AppError(
+        400,
+        `Mark deleted is only available on or after ${row.scheduledPurgeAt.toISOString().slice(0, 10)} (30-day hold).`,
+        "PURGE_NOT_DUE",
+      );
+    }
+
+    await softAnonymizeUser(row.userId, req.adminId);
+    const updated = await prisma.accountDeletionRequest.update({
+      where: { id: row.id },
+      data: {
+        status: "DELETED",
+        deletedAt: new Date(),
+        processedAt: new Date(),
+        processedByAdminId: req.adminId,
+      },
+    });
+    // User identifiers cleared — in-app notify may no longer reach them; attempt anyway.
+    await notifyCustomer({
+      userId: row.userId,
+      title: "Account deleted",
+      body: "Your Kipit account has been soft-deleted. You can register again with the same email or phone if you wish.",
+      href: "/login",
+      pushKind: "security",
+    }).catch(() => undefined);
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "account_deletion.deleted",
+      entityType: "AccountDeletionRequest",
+      entityId: row.id,
+      after: { soft: true },
+    });
+    res.json({ data: serializeDeletionRequest(updated) });
+  }),
+);
+
+adminRouter.get(
   "/transactions",
   requireAdmin,
   asyncHandler(async (_req, res) => {

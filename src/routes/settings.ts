@@ -875,3 +875,115 @@ settingsRouter.delete(
     res.status(204).send();
   }),
 );
+
+settingsRouter.get(
+  "/account-deletion",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const {
+      ACCOUNT_DELETION_REASON_CODES,
+      ACCOUNT_DELETION_REASON_LABELS,
+      ACCOUNT_DELETION_HOLD_DAYS,
+    } = await import("../lib/account-deletion.js");
+    const { findOpenDeletionRequest, serializeDeletionRequest } = await import(
+      "../services/account-deletion.js"
+    );
+    const open = await findOpenDeletionRequest(req.userId!);
+    const latest =
+      open ??
+      (await prisma.accountDeletionRequest.findFirst({
+        where: { userId: req.userId! },
+        orderBy: { createdAt: "desc" },
+      }));
+    res.json({
+      data: {
+        holdDays: ACCOUNT_DELETION_HOLD_DAYS,
+        reasons: ACCOUNT_DELETION_REASON_CODES.map((code) => ({
+          code,
+          label: ACCOUNT_DELETION_REASON_LABELS[code],
+        })),
+        request: latest ? serializeDeletionRequest(latest) : null,
+      },
+    });
+  }),
+);
+
+settingsRouter.post(
+  "/account-deletion",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const { ACCOUNT_DELETION_REASON_CODES, isAccountDeletionReasonCode } = await import(
+      "../lib/account-deletion.js"
+    );
+    const { findOpenDeletionRequest, scheduledPurgeAtFrom, serializeDeletionRequest } =
+      await import("../services/account-deletion.js");
+
+    const user = await prisma.user.findUniqueOrThrow({ where: { id: req.userId! } });
+    if (user.frozen && user.frozenReason === "Account deletion completed") {
+      throw new AppError(403, "This account has already been deleted.", "ACCOUNT_DELETED");
+    }
+
+    const open = await findOpenDeletionRequest(req.userId!);
+    if (open) {
+      throw new AppError(
+        409,
+        "You already have an account deletion request in progress. You can check its status instead.",
+        "DELETION_ALREADY_OPEN",
+      );
+    }
+
+    const body = z
+      .object({
+        reasonCode: z.enum(
+          ACCOUNT_DELETION_REASON_CODES as unknown as [
+            (typeof ACCOUNT_DELETION_REASON_CODES)[number],
+            ...(typeof ACCOUNT_DELETION_REASON_CODES)[number][],
+          ],
+        ),
+        reasonDetail: z.string().trim().max(2000).optional(),
+      })
+      .parse(req.body);
+
+    if (!isAccountDeletionReasonCode(body.reasonCode)) {
+      throw new AppError(400, "Invalid reason", "INVALID_REASON");
+    }
+    if (body.reasonCode === "OTHER" && (!body.reasonDetail || body.reasonDetail.length < 8)) {
+      throw new AppError(
+        400,
+        "Please describe your reason (at least 8 characters).",
+        "REASON_DETAIL_REQUIRED",
+      );
+    }
+
+    const row = await prisma.accountDeletionRequest.create({
+      data: {
+        userId: req.userId!,
+        reasonCode: body.reasonCode,
+        reasonDetail:
+          body.reasonCode === "OTHER"
+            ? body.reasonDetail!.trim()
+            : body.reasonDetail?.trim() || null,
+        status: "SUBMITTED",
+        scheduledPurgeAt: scheduledPurgeAtFrom(),
+      },
+    });
+
+    await writeAudit({
+      actorUserId: req.userId!,
+      action: "account_deletion.submitted",
+      entityType: "AccountDeletionRequest",
+      entityId: row.id,
+      after: { reasonCode: row.reasonCode },
+    });
+
+    await createUserNotification({
+      userId: req.userId!,
+      title: "Deletion request received",
+      body: `We'll review your account and complete checks. Soft removal is scheduled on or after ${row.scheduledPurgeAt.toISOString().slice(0, 10)}.`,
+      href: "/settings/delete-account",
+      pushKind: "security",
+    }).catch(() => undefined);
+
+    res.status(201).json({ data: serializeDeletionRequest(row) });
+  }),
+);
