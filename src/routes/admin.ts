@@ -2226,7 +2226,7 @@ adminRouter.patch(
     await notifyCustomer({
       userId: row.userId,
       title: "Account deleted",
-      body: "Your Kipit account has been soft-deleted. You can register again with the same email or phone if you wish.",
+      body: "Your Kipit account has been deleted. You can register again with the same email or phone if you wish.",
       href: "/login",
       pushKind: "security",
     }).catch(() => undefined);

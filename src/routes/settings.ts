@@ -979,7 +979,7 @@ settingsRouter.post(
     await createUserNotification({
       userId: req.userId!,
       title: "Deletion request received",
-      body: `We'll review your account and complete checks. Soft removal is scheduled on or after ${row.scheduledPurgeAt.toISOString().slice(0, 10)}.`,
+      body: `We'll review your account and complete checks. Removal is scheduled on or after ${row.scheduledPurgeAt.toISOString().slice(0, 10)}.`,
       href: "/settings/delete-account",
       pushKind: "security",
     }).catch(() => undefined);
