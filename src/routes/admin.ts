@@ -789,8 +789,13 @@ adminRouter.get(
           addressCity: user.addressCity,
           addressState: user.addressState,
           addressLga: user.addressLga,
+          /** Full IDs for admin console only (customer getKycStatus stays masked). */
+          bvn: profile?.bvn ?? null,
+          nin: profile?.nin ?? null,
           ninName: profile?.ninName ?? null,
           bvnName: profile?.bvnName ?? null,
+          bvnProviderStatus: profile?.bvnProviderStatus ?? null,
+          ninProviderStatus: profile?.ninProviderStatus ?? null,
           occupation: user.occupation,
           employmentStatus: user.employmentStatus,
           sourceOfFunds: user.sourceOfFunds,
