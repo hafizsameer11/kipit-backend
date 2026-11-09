@@ -42,6 +42,7 @@ function daysBetween(start: Date, end: Date): number {
 import { listSignupDropoffs } from "../services/signup-funnel.js";
 import {
   sendWelcomeEmail,
+  sendCustomerPasswordResetEmail,
   notifyCustomer,
   notifyAccountAccessChange,
   sendAdminInviteEmail,
@@ -1423,6 +1424,70 @@ adminRouter.patch(
       reason: reason ?? undefined,
     }).catch((err) => console.warn("[admin] freeze notify failed", err));
     res.json({ data: { id: user.id, frozen: user.frozen, frozenReason: user.frozenReason } });
+  }),
+);
+
+/** Reset customer login password and email a temporary password. */
+adminRouter.post(
+  "/users/:userId/reset-password",
+  requireAdmin,
+  asyncHandler(async (req: AdminRequest, res) => {
+    const userId = String(req.params.userId);
+    const user = await prisma.user.findUnique({ where: { id: userId } });
+    if (!user) throw new AppError(404, "User not found", "NOT_FOUND");
+    if (!user.email?.trim()) {
+      throw new AppError(400, "This customer has no email on file to receive a password.", "EMAIL_REQUIRED");
+    }
+
+    const tempPassword = `Kp${nanoid(10)}!`;
+    await prisma.user.update({
+      where: { id: user.id },
+      data: {
+        passwordHash: await hashSecret(tempPassword),
+        failedLoginCount: 0,
+        lockedUntil: null,
+      },
+    });
+
+    let emailed = true;
+    try {
+      await sendCustomerPasswordResetEmail({
+        to: user.email,
+        firstName: user.firstName,
+        tempPassword,
+      });
+    } catch (err) {
+      emailed = false;
+      console.warn("[customer-password-reset-email]", err);
+    }
+
+    await writeAudit({
+      actorAdminId: req.adminId,
+      action: "user.password_reset",
+      entityType: "User",
+      entityId: user.id,
+      after: { emailed },
+      ipAddress: req.ip,
+      userAgent: req.get("user-agent") ?? undefined,
+    });
+
+    await notifyCustomer({
+      userId: user.id,
+      title: "Password reset",
+      body: "An administrator reset your login password. Check your email for a temporary password.",
+      href: "/settings/security",
+      pushKind: "security",
+    }).catch(() => undefined);
+
+    res.json({
+      data: {
+        id: user.id,
+        email: user.email,
+        emailed,
+        /** Returned so ops can share if email delivery fails. */
+        tempPassword,
+      },
+    });
   }),
 );
 

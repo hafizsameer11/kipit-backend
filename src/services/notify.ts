@@ -48,6 +48,42 @@ export async function sendWelcomeEmail(input: {
   return sendEmail({ to: input.to, subject, text, html });
 }
 
+/** Email a newly generated temporary password after an admin resets a customer account. */
+export async function sendCustomerPasswordResetEmail(input: {
+  to: string;
+  firstName: string;
+  tempPassword: string;
+}) {
+  const name = input.firstName.trim() || "there";
+  const subject = "Your Kipit password was reset";
+  const text = [
+    `Hi ${name},`,
+    "",
+    "An administrator reset the password on your Kipit account.",
+    "",
+    `Temporary password: ${input.tempPassword}`,
+    "",
+    "Sign in with this password, then change it in Settings → Security.",
+    "",
+    "If you did not expect this, contact Kipit support right away.",
+    "",
+    "— Kipit",
+  ].join("\n");
+  const html = brandWrap(
+    "Password reset",
+    `
+      <p style="margin:0 0 12px">Hi ${name},</p>
+      <p style="margin:0 0 12px">An administrator reset the password on your Kipit account.</p>
+      <p style="margin:16px 0;padding:12px 14px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0">
+        <strong>Temporary password:</strong> <code>${input.tempPassword}</code><br/>
+        <span style="color:#64748b;font-size:13px">Sign in, then change it in Settings → Security.</span>
+      </p>
+      <p style="margin:0 0 12px">If you did not expect this, contact Kipit support right away.</p>
+    `,
+  );
+  return sendEmail({ to: input.to, subject, text, html });
+}
+
 export async function sendAdminInviteEmail(input: {
   to: string;
   name: string;
