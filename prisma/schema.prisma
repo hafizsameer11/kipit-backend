@@ -70,6 +70,25 @@ enum MaturityInstruction {
   PAYOUT
 }
 
+/// Fixed-plan product family (B8). Legacy FIXED placements without a type are treated as LOCK.
+enum PlanType {
+  LOCK
+  FLEX
+}
+
+/// Kipit Lock interest payout. Flex is always AT_MATURITY.
+enum InterestPayout {
+  AT_MATURITY
+  UPFRONT
+}
+
+/// Rate catalogue family for Lock / Flex / Call (C10 / B8).
+enum RateFamily {
+  CALL
+  LOCK
+  FLEX
+}
+
 enum ProductAvailability {
   OPEN
   CLOSING
@@ -142,6 +161,21 @@ model User {
   onboardedByAdminId String?
   dateOfBirth      DateTime?
   gender           String?
+  /// B1 Tier 1 profile fields
+  maritalStatus    String?
+  spouseFullName   String?
+  mothersMaidenName String?
+  maidenName       String?
+  maidenNameNa     Boolean   @default(false)
+  nationality      String?
+  stateOfOrigin    String?
+  lgaOfOrigin      String?
+  hometown         String?
+  hometownLga      String?
+  nextOfKinName    String?
+  nextOfKinRelationship String?
+  nextOfKinPhone   String?
+  nextOfKinAddress String?
   occupation       String?
   employmentStatus String?
   sourceOfFunds    String?
@@ -331,7 +365,14 @@ model RateBand {
   label        String
   minDays      Int
   maxDays      Int?
+  /// Net rate (client earns after 10% WHT). Scale: percent × 10_000.
   rateBps      Int
+  /// LOCK / FLEX / CALL — null = legacy band (Starter/Vault era).
+  family       RateFamily?
+  /// For LOCK: AT_MATURITY or UPFRONT. Null for CALL / FLEX / legacy.
+  payout       InterestPayout?
+  /// Canonical tenor for standard bands (30, 60, 90, 180, 365). Null for CALL / custom ranges.
+  standardTenorDays Int?
   effectiveFrom DateTime @default(now())
   createdAt    DateTime @default(now())
   updatedAt    DateTime @updatedAt
@@ -375,9 +416,13 @@ model Product {
   /// Admin-managed Explore detail: about, how[], risks[], documents[], faqs[], highlights[]
   details        Json?
   rateBps        Int
+  /// Withholding tax rate as percent (default 10). Some instruments may be 0.
+  whtRatePct     Float               @default(10)
   tenorDays      Int
   minimumKobo    BigInt
   availability   ProductAvailability @default(OPEN)
+  /// Soft-delete: hidden from Explore and the default admin list; placements are untouched.
+  archivedAt     DateTime?
   issuer         String?
   largeTicket    Boolean             @default(false)
   termsVersion   String              @default("1.0")
@@ -405,6 +450,7 @@ model Placement {
   product             Product?            @relation(fields: [productId], references: [id])
   name                String
   principalKobo       BigInt
+  /// Net rate (after WHT). Scale: percent × 10_000.
   rateBps             Int
   tenorDays           Int?
   startDate           DateTime            @default(now())
@@ -417,6 +463,15 @@ model Placement {
   ledgerAccountId     String?
   goalKobo            BigInt?
   isGift              Boolean             @default(false)
+  /// LOCK / FLEX. Null = legacy fixed plan (treated as LOCK at maturity).
+  planType            PlanType?
+  /// LOCK only: UPFRONT or AT_MATURITY. Flex always AT_MATURITY.
+  interestPayout      InterestPayout?
+  /// Resets Flex 30-day break lock (B26).
+  lastTopUpAt         DateTime?
+  /// Flex break requested; payout within 3 business days.
+  breakRequestedAt    DateTime?
+  breakCreditAt       DateTime?
   createdAt           DateTime            @default(now())
   updatedAt           DateTime            @updatedAt
 
@@ -733,6 +788,23 @@ model ConsentAcceptance {
   acceptedAt DateTime @default(now())
 
   @@index([userId, docKey])
+}
+
+/// B25 — platform legal PDFs managed in admin (Terms, Privacy, Risk, Product Terms).
+model LegalDocument {
+  id          String   @id @default(cuid())
+  /// terms | privacy | risk_disclosure | product_terms_lock | product_terms_flex
+  docKey      String
+  title       String
+  version     String
+  fileUrl     String?
+  published   Boolean  @default(false)
+  publishedAt DateTime?
+  createdAt   DateTime @default(now())
+  updatedAt   DateTime @updatedAt
+
+  @@unique([docKey, version])
+  @@index([docKey, published])
 }
 
 model JobRun {

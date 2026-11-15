@@ -300,34 +300,48 @@ export async function maturePlacement(input: {
 
   const payoutNaira = koboToNaira(payout);
   const interestNaira = koboToNaira(interest);
+  const { interestBreakdownFromNetAmount } = await import("./wht.js");
+  const { displayPlanName } = await import("./lock-flex-rates.js");
+  const bd = interestBreakdownFromNetAmount(interest, placement.rateBps);
+  const planLabel =
+    placement.kind === "FIXED"
+      ? displayPlanName(placement.planType ?? "LOCK", placement.tenorDays)
+      : placement.name;
+  const user = await prisma.user.findUnique({
+    where: { id: placement.userId },
+    select: { firstName: true },
+  });
+  const firstName = user?.firstName?.trim() || "there";
+  const whtLines = `Principal ₦${koboToNaira(placement.principalKobo).toLocaleString("en-NG")} · Gross interest ₦${koboToNaira(bd.grossKobo).toLocaleString("en-NG")} · Less WHT (10%) ₦${koboToNaira(bd.whtKobo).toLocaleString("en-NG")} · Net interest ₦${koboToNaira(bd.netKobo).toLocaleString("en-NG")} · Total paid ₦${payoutNaira.toLocaleString("en-NG")}`;
 
   if (rolledOver) {
-    const ratePct = (rolledOver.rateBps / 10000).toFixed(4);
+    const ratePct = (rolledOver.rateBps / 10000).toFixed(2);
     const matures = rolledOver.maturityDate.toISOString().slice(0, 10);
     await createUserNotification({
       userId: placement.userId,
-      title: early ? "Plan matured early — rolled over" : "Plan rolled over",
-      body: `${placement.name} settled. ₦${payoutNaira.toLocaleString("en-NG")} reinvested at ${ratePct}% p.a. · matures ${matures}.`,
+      title: `Hooray, ${firstName}!`,
+      body: `Your ${tenorDays}-day plan has matured. ₦${payoutNaira.toLocaleString("en-NG")} (principal + interest) has been rolled over into a new ${tenorDays}-day plan at ${ratePct}% p.a., maturing on ${matures}.`,
       href: "/portfolio",
       pushKind: "maturity",
       emailKind: "investment",
       amountNaira: payoutNaira,
-      emailDetail: early
-        ? `${placement.name} · early maturity · rolled over at ${ratePct}% p.a.`
-        : `${placement.name} · rolled over at ${ratePct}% p.a. · matures ${matures}`,
+      emailDetail: `Hooray! Your Kipit investment has matured · ${planLabel} · ${whtLines} · Rolled over at ${ratePct}% p.a. · matures ${matures}`,
     }).catch(() => undefined);
   } else {
+    const destBalance = toCall
+      ? await ensureUserCall(placement.userId)
+      : await ensureUserWallet(placement.userId);
+    const balNaira = koboToNaira(destBalance.balanceKobo);
+    const destLabel = toCall ? "Call Account" : "wallet";
     await createUserNotification({
       userId: placement.userId,
-      title: early ? "Plan matured early" : "Plan matured",
-      body: `${placement.name} settled. ₦${payoutNaira.toLocaleString("en-NG")} credited${toCall ? " to Call Account" : " to your wallet"}.`,
+      title: `Hooray, ${firstName}!`,
+      body: `Your ${tenorDays}-day plan has matured. ₦${payoutNaira.toLocaleString("en-NG")} (principal + interest) has been paid into your ${destLabel}. Your ${destLabel} balance is now ₦${balNaira.toLocaleString("en-NG")}.`,
       href: "/portfolio",
       pushKind: "maturity",
       emailKind: "investment",
       amountNaira: payoutNaira,
-      emailDetail: early
-        ? `${placement.name} · early maturity · ${daysHeld}d held · full ${tenorDays}d interest`
-        : `${placement.name} · matured`,
+      emailDetail: `Hooray! Your Kipit investment has matured · ${planLabel} · ${whtLines} · Paid to ${destLabel} · Balance ₦${balNaira.toLocaleString("en-NG")} · WhatsApp +234 707 198 5171 · support@mykipit.com`,
     }).catch(() => undefined);
   }
 

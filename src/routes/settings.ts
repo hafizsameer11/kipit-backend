@@ -22,6 +22,37 @@ import { brandWrap, sendEmail } from "../services/email.js";
 
 export const settingsRouter = Router();
 
+/** B1 / B27 — Tier 1 profile completeness (personal + residential + next of kin). */
+export function isProfileComplete(user: {
+  dateOfBirth: Date | null;
+  maritalStatus: string | null;
+  spouseFullName: string | null;
+  mothersMaidenName: string | null;
+  maidenName: string | null;
+  maidenNameNa: boolean;
+  nationality: string | null;
+  addressStreet: string | null;
+  addressCity: string | null;
+  addressState: string | null;
+  addressLga: string | null;
+  nextOfKinName: string | null;
+  nextOfKinRelationship: string | null;
+  nextOfKinPhone: string | null;
+  nextOfKinAddress: string | null;
+}) {
+  if (!user.dateOfBirth) return false;
+  if (!user.maritalStatus) return false;
+  if (user.maritalStatus === "Married" && !user.spouseFullName?.trim()) return false;
+  if (!user.mothersMaidenName?.trim()) return false;
+  if (!user.maidenNameNa && !user.maidenName?.trim()) return false;
+  if (!user.nationality?.trim()) return false;
+  if (!user.addressStreet?.trim() || !user.addressCity?.trim()) return false;
+  if (!user.addressState?.trim() || !user.addressLga?.trim()) return false;
+  if (!user.nextOfKinName?.trim() || !user.nextOfKinRelationship?.trim()) return false;
+  if (!user.nextOfKinPhone?.trim() || !user.nextOfKinAddress?.trim()) return false;
+  return true;
+}
+
 const STATEMENT_KINDS = [
   "Account statement",
   "Transaction statement",
@@ -49,6 +80,8 @@ settingsRouter.get(
       orderBy: { acceptedAt: "desc" },
     });
 
+    const profileComplete = isProfileComplete(user);
+
     res.json({
       data: {
         ...publicUser(user),
@@ -57,6 +90,22 @@ settingsRouter.get(
         occupation: user.occupation,
         employmentStatus: user.employmentStatus,
         sourceOfFunds: user.sourceOfFunds,
+        maritalStatus: user.maritalStatus,
+        spouseFullName: user.spouseFullName,
+        mothersMaidenName: user.mothersMaidenName,
+        maidenName: user.maidenName,
+        maidenNameNa: user.maidenNameNa,
+        nationality: user.nationality,
+        stateOfOrigin: user.stateOfOrigin,
+        lgaOfOrigin: user.lgaOfOrigin,
+        hometown: user.hometown,
+        hometownLga: user.hometownLga,
+        nextOfKin: {
+          name: user.nextOfKinName,
+          relationship: user.nextOfKinRelationship,
+          phone: user.nextOfKinPhone,
+          address: user.nextOfKinAddress,
+        },
         address: {
           street: user.addressStreet,
           city: user.addressCity,
@@ -64,6 +113,7 @@ settingsRouter.get(
           lga: user.addressLga,
           pending: user.addressPending,
         },
+        profileComplete,
         lockedFields,
         consents: consents.map((c) => ({
           docKey: c.docKey,
@@ -92,6 +142,22 @@ settingsRouter.patch(
         firstName: z.string().min(1).optional(),
         middleName: z.string().optional().nullable(),
         surname: z.string().min(1).optional(),
+        maritalStatus: z.enum(["Single", "Married", "Others"]).optional(),
+        spouseFullName: z.string().optional().nullable(),
+        mothersMaidenName: z.string().optional(),
+        maidenName: z.string().optional().nullable(),
+        maidenNameNa: z.boolean().optional(),
+        nationality: z.string().optional(),
+        stateOfOrigin: z.string().optional().nullable(),
+        lgaOfOrigin: z.string().optional().nullable(),
+        hometown: z.string().optional().nullable(),
+        hometownLga: z.string().optional().nullable(),
+        nextOfKinName: z.string().optional(),
+        nextOfKinRelationship: z
+          .enum(["Spouse", "Parent", "Brother", "Sister", "Child", "Other"])
+          .optional(),
+        nextOfKinPhone: z.string().optional(),
+        nextOfKinAddress: z.string().optional(),
       })
       .parse(req.body);
 
@@ -127,9 +193,50 @@ settingsRouter.patch(
         ...(body.dateOfBirth !== undefined
           ? { dateOfBirth: new Date(body.dateOfBirth) }
           : {}),
+        ...(body.maritalStatus !== undefined ? { maritalStatus: body.maritalStatus } : {}),
+        ...(body.spouseFullName !== undefined ? { spouseFullName: body.spouseFullName } : {}),
+        ...(body.mothersMaidenName !== undefined ? { mothersMaidenName: body.mothersMaidenName } : {}),
+        ...(body.maidenName !== undefined ? { maidenName: body.maidenName } : {}),
+        ...(body.maidenNameNa !== undefined ? { maidenNameNa: body.maidenNameNa } : {}),
+        ...(body.nationality !== undefined ? { nationality: body.nationality } : {}),
+        ...(body.stateOfOrigin !== undefined ? { stateOfOrigin: body.stateOfOrigin } : {}),
+        ...(body.lgaOfOrigin !== undefined ? { lgaOfOrigin: body.lgaOfOrigin } : {}),
+        ...(body.hometown !== undefined ? { hometown: body.hometown } : {}),
+        ...(body.hometownLga !== undefined ? { hometownLga: body.hometownLga } : {}),
+        ...(body.nextOfKinName !== undefined ? { nextOfKinName: body.nextOfKinName } : {}),
+        ...(body.nextOfKinRelationship !== undefined
+          ? { nextOfKinRelationship: body.nextOfKinRelationship }
+          : {}),
+        ...(body.nextOfKinPhone !== undefined ? { nextOfKinPhone: body.nextOfKinPhone } : {}),
+        ...(body.nextOfKinAddress !== undefined ? { nextOfKinAddress: body.nextOfKinAddress } : {}),
       },
     });
-    res.json({ data: publicUser(updated) });
+
+    // B24 — email on profile update
+    if (updated.email) {
+      const { sendProfileUpdatedEmail, createUserNotification } = await import("../services/notify.js");
+      const changed = Object.keys(body).filter((k) => (body as Record<string, unknown>)[k] !== undefined);
+      const changeSummary = changed.length ? changed.join(", ") : "Profile details";
+      await sendProfileUpdatedEmail({
+        to: updated.email,
+        firstName: updated.firstName,
+        changeSummary,
+      }).catch(() => undefined);
+      await createUserNotification({
+        userId: updated.id,
+        title: "Profile updated",
+        body: `Your profile was updated (${changeSummary}).`,
+        href: "/settings/profile",
+        pushKind: "security",
+      }).catch(() => undefined);
+    }
+
+    res.json({
+      data: {
+        ...publicUser(updated),
+        profileComplete: isProfileComplete(updated),
+      },
+    });
   }),
 );
 
@@ -155,6 +262,21 @@ settingsRouter.patch(
         addressPending: true,
       },
     });
+    if (user.email) {
+      const { sendProfileUpdatedEmail, createUserNotification } = await import("../services/notify.js");
+      await sendProfileUpdatedEmail({
+        to: user.email,
+        firstName: user.firstName,
+        changeSummary: "Residential address",
+      }).catch(() => undefined);
+      await createUserNotification({
+        userId: user.id,
+        title: "Profile updated",
+        body: "Your residential address was updated and is pending review.",
+        href: "/settings/profile",
+        pushKind: "security",
+      }).catch(() => undefined);
+    }
     res.json({
       data: {
         street: user.addressStreet,
@@ -824,6 +946,16 @@ settingsRouter.post(
       after: { kind: body.kind, from: body.from, to: body.to, provider: sent.provider },
     }).catch(() => undefined);
 
+    const { createUserNotification } = await import("../services/notify.js");
+    await createUserNotification({
+      userId: user.id,
+      title: "Statement emailed",
+      body: `${body.kind} for ${period} was sent to ${user.email}.`,
+      href: "/settings",
+      pushKind: "general",
+      skipPush: true,
+    }).catch(() => undefined);
+
     res.json({ data: { ok: true, messageId: sent.id, provider: sent.provider } });
   }),
 );
@@ -985,5 +1117,62 @@ settingsRouter.post(
     }).catch(() => undefined);
 
     res.status(201).json({ data: serializeDeletionRequest(row) });
+  }),
+);
+
+/** B25 — published legal documents + whether the user must re-accept. */
+settingsRouter.get(
+  "/legal",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const docs = await prisma.legalDocument.findMany({
+      where: { published: true },
+      orderBy: [{ docKey: "asc" }, { publishedAt: "desc" }],
+    });
+    // Latest published version per docKey
+    const latest = new Map<string, (typeof docs)[number]>();
+    for (const d of docs) {
+      if (!latest.has(d.docKey)) latest.set(d.docKey, d);
+    }
+    const acceptances = await prisma.consentAcceptance.findMany({
+      where: { userId: req.userId! },
+    });
+    const accepted = new Map(acceptances.map((a) => [`${a.docKey}:${a.version}`, a]));
+    res.json({
+      data: [...latest.values()].map((d) => ({
+        id: d.id,
+        docKey: d.docKey,
+        title: d.title,
+        version: d.version,
+        fileUrl: d.fileUrl,
+        publishedAt: d.publishedAt,
+        accepted: accepted.has(`${d.docKey}:${d.version}`),
+      })),
+    });
+  }),
+);
+
+settingsRouter.post(
+  "/legal/accept",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const body = z
+      .object({
+        docKey: z.string().min(1),
+        version: z.string().min(1),
+      })
+      .parse(req.body);
+    const doc = await prisma.legalDocument.findFirst({
+      where: { docKey: body.docKey, version: body.version, published: true },
+    });
+    if (!doc) throw new AppError(404, "Document not found", "NOT_FOUND");
+    await prisma.consentAcceptance.create({
+      data: {
+        userId: req.userId!,
+        docKey: body.docKey,
+        version: body.version,
+      },
+    });
+    res.status(201).json({ data: { ok: true, docKey: body.docKey, version: body.version } });
   }),
 );

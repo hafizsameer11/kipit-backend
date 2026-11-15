@@ -39,22 +39,105 @@ function daysBetween(start: Date, end: Date): number {
   const ms = end.getTime() - start.getTime();
   return Math.max(1, Math.round(ms / 86_400_000));
 }
+
+function placementDisplayStatus(
+  p: Pick<Placement, "status" | "breakRequestedAt" | "breakCreditAt">,
+): "active" | "matured" | "broken" | "break pending" {
+  if (p.status === "MATURED") return "matured";
+  if (p.status === "CLOSED" && p.breakRequestedAt) return "broken";
+  if (p.status === "CLOSED") return "matured";
+  if (p.status === "ACTIVE" && p.breakRequestedAt) return "break pending";
+  return "active";
+}
+
+function serializeAdminPlacement(
+  p: Placement,
+  client?: { id: string; name: string; email: string | null },
+) {
+  const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
+  const payout = p.interestPayout ?? "AT_MATURITY";
+  const displayName =
+    p.kind === "FIXED" ? displayPlanName(planType, p.tenorDays) : p.name;
+  const pair = formatRatePair(p.rateBps);
+  const expectedNet =
+    p.interestOverrideKobo != null
+      ? interestBreakdownFromNetAmount(p.interestOverrideKobo, p.rateBps)
+      : p.tenorDays != null
+        ? interestBreakdownFromNetRate(p.principalKobo, p.rateBps, p.tenorDays)
+        : null;
+  const accruedNet = accruedInterestToDateKobo(p);
+  const accruedBd = interestBreakdownFromNetAmount(accruedNet, p.rateBps);
+  const valueAtMaturity =
+    payout === "UPFRONT"
+      ? p.principalKobo
+      : expectedNet
+        ? p.principalKobo + expectedNet.netKobo
+        : p.principalKobo;
+
+  return {
+    id: p.id,
+    userId: p.userId,
+    client: client ?? null,
+    name: displayName,
+    rawName: p.name,
+    kind: p.kind,
+    planType,
+    interestPayout: payout,
+    status: placementDisplayStatus(p),
+    statusRaw: p.status,
+    principal: koboToNaira(p.principalKobo),
+    ratePct: pair.netRatePct,
+    grossRatePct: pair.grossRatePct,
+    rateLabel: pair.label,
+    tenorDays: p.tenorDays,
+    startDate: p.startDate.toISOString().slice(0, 10),
+    maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
+    placedAt: p.createdAt.toISOString(),
+    accrued: koboToNaira(accruedNet),
+    accruedGross: koboToNaira(accruedBd.grossKobo),
+    accruedWht: koboToNaira(accruedBd.whtKobo),
+    accruedNet: koboToNaira(accruedBd.netKobo),
+    expectedInterest: expectedNet ? koboToNaira(expectedNet.netKobo) : null,
+    expectedGross: expectedNet ? koboToNaira(expectedNet.grossKobo) : null,
+    expectedWht: expectedNet ? koboToNaira(expectedNet.whtKobo) : null,
+    expectedNet: expectedNet ? koboToNaira(expectedNet.netKobo) : null,
+    valueAtMaturity: koboToNaira(valueAtMaturity),
+    maturityInstruction: p.maturityInstruction,
+    breakRequestedAt: p.breakRequestedAt?.toISOString() ?? null,
+    productId: p.productId,
+    interestOverride: p.interestOverrideKobo != null,
+    createdAt: p.createdAt,
+  };
+}
 import { listSignupDropoffs } from "../services/signup-funnel.js";
 import {
   sendWelcomeEmail,
   sendCustomerPasswordResetEmail,
   notifyCustomer,
+  createUserNotification,
   notifyAccountAccessChange,
   sendAdminInviteEmail,
   sendTicketAssignedEmail,
+  sendProfileUpdatedEmail,
 } from "../services/notify.js";
+import {
+  displayPlanName,
+  PLAN_MIN_NAIRA,
+  resolvePlanRate,
+} from "../services/lock-flex-rates.js";
+import {
+  formatRatePair,
+  interestBreakdownFromNetAmount,
+  interestBreakdownFromNetRate,
+} from "../services/wht.js";
 import { requestOtp, verifyOtp } from "../services/auth.js";
 import { productDetailsSchema, toPrismaJson, asProductDetails } from "../lib/product-details.js";
+import { serializePlacementHolding } from "../services/placement-display.js";
 import jwt from "jsonwebtoken";
 import { z } from "zod";
 import { Router } from "express";
 import { nanoid } from "nanoid";
-import type { Prisma } from "@prisma/client";
+import type { Placement, Prisma } from "@prisma/client";
 
 async function userBalances(userId: string) {
   const wallet = await ensureUserWallet(userId);
@@ -388,6 +471,7 @@ adminRouter.post(
 adminRouter.get(
   "/dashboard",
   requireAdmin,
+  requirePermission("dashboard.view"),
   asyncHandler(async (req: AdminRequest, res) => {
     const wallets = await prisma.ledgerAccount.aggregate({
       where: { type: "USER_WALLET" },
@@ -399,75 +483,167 @@ adminRouter.get(
     });
     const activePlacements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
-      select: {
-        kind: true,
-        principalKobo: true,
-        rateBps: true,
-        tenorDays: true,
-        startDate: true,
-        interestOverrideKobo: true,
-        accruedKobo: true,
-      },
+      include: { product: { include: { category: true } } },
     });
-    let fixedPrincipal = 0n;
-    let explorePrincipal = 0n;
-    let interestAccruedKobo = 0n;
-    let interestRemainingKobo = 0n;
-    for (const p of activePlacements) {
-      // Call cash sits on USER_CALL ledger; only FIXED / EXPLORE contribute placement principal.
-      if (p.kind === "EXPLORE") explorePrincipal += p.principalKobo;
-      else if (p.kind === "FIXED") fixedPrincipal += p.principalKobo;
-      if (p.kind === "FIXED" || p.kind === "EXPLORE") {
-        const accrued = accruedInterestToDateKobo(p);
-        const full = placementInterestKobo(p);
-        interestAccruedKobo += accrued;
-        const remaining = full > accrued ? full - accrued : 0n;
-        interestRemainingKobo += remaining;
-      }
-    }
-    const walletKobo = wallets._sum.balanceKobo ?? 0n;
-    const callKobo = call._sum.balanceKobo ?? 0n;
-    const principalKobo = walletKobo + callKobo + fixedPrincipal + explorePrincipal;
-    const fumKobo = principalKobo + interestAccruedKobo;
-    const users = await prisma.user.count();
-    const pendingKyc = await prisma.kycProfile.count({ where: { status: "PENDING_REVIEW" } });
-    const pendingWithdrawals = await prisma.withdrawalRequest.count({
-      where: { status: "PROCESSING" },
-    });
-    const recentAudit = await prisma.auditEvent.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 8,
-    });
-    const showAum = canViewAum(req.adminRole);
-
-    res.json({
-      data: {
-        /** Aggregate portfolio value = principal + accrued interest to date. */
-        fum: showAum ? koboToNaira(fumKobo) : null,
-        principal: showAum ? koboToNaira(principalKobo) : null,
-        canViewAum: showAum,
-        users,
-        pendingKyc,
-        pendingWithdrawals,
-        interestAccrued: showAum ? koboToNaira(interestAccruedKobo) : 0,
-        /** Interest still to earn/pay through maturity on active plans. */
-        interestPayable: showAum ? koboToNaira(interestRemainingKobo) : 0,
-        recentAudit,
-        breakdown: showAum
-          ? {
-              wallet: koboToNaira(walletKobo),
-              call: koboToNaira(callKobo),
-              fixed: koboToNaira(fixedPrincipal),
-              explore: koboToNaira(explorePrincipal),
-              placements: koboToNaira(fixedPrincipal + explorePrincipal),
-              accrued: koboToNaira(interestAccruedKobo),
-            }
-          : null,
-      },
-    });
-  }),
-);
-
+    let fixedPrincipal = 0n;
+    let explorePrincipal = 0n;
+    let lockPrincipal = 0n;
+    let flexPrincipal = 0n;
+    let lockUpfrontPrincipal = 0n;
+    let lockMaturityPrincipal = 0n;
+    let valueAtMaturityKobo = 0n;
+    let interestAccruedKobo = 0n;
+    let interestRemainingKobo = 0n;
+    let accruedGrossKobo = 0n;
+    let accruedWhtKobo = 0n;
+    let expectedGrossKobo = 0n;
+    let expectedWhtKobo = 0n;
+    let expectedNetKobo = 0n;
+    const taxByCategory = new Map<
+      string,
+      { principal: bigint; accruedGross: bigint; accruedWht: bigint; accruedNet: bigint }
+    >();
+
+    for (const p of activePlacements) {
+      if (p.kind === "EXPLORE") explorePrincipal += p.principalKobo;
+      else if (p.kind === "FIXED") fixedPrincipal += p.principalKobo;
+
+      if (p.kind === "FIXED" || p.kind === "EXPLORE") {
+        const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
+        const payout = p.interestPayout ?? "AT_MATURITY";
+        if (planType === "LOCK") {
+          lockPrincipal += p.principalKobo;
+          if (payout === "UPFRONT") lockUpfrontPrincipal += p.principalKobo;
+          else lockMaturityPrincipal += p.principalKobo;
+        } else if (planType === "FLEX") {
+          flexPrincipal += p.principalKobo;
+        }
+
+        const accrued = accruedInterestToDateKobo(p);
+        const accruedBd = interestBreakdownFromNetAmount(accrued, p.rateBps);
+        const expectedBd =
+          p.interestOverrideKobo != null
+            ? interestBreakdownFromNetAmount(p.interestOverrideKobo, p.rateBps)
+            : p.tenorDays != null
+              ? interestBreakdownFromNetRate(p.principalKobo, p.rateBps, p.tenorDays)
+              : null;
+        const full = expectedBd?.netKobo ?? placementInterestKobo(p);
+        interestAccruedKobo += accrued;
+        accruedGrossKobo += accruedBd.grossKobo;
+        accruedWhtKobo += accruedBd.whtKobo;
+        if (expectedBd) {
+          expectedGrossKobo += expectedBd.grossKobo;
+          expectedWhtKobo += expectedBd.whtKobo;
+          expectedNetKobo += expectedBd.netKobo;
+        }
+        const remaining = full > accrued ? full - accrued : 0n;
+        interestRemainingKobo += remaining;
+        valueAtMaturityKobo +=
+          payout === "UPFRONT" ? p.principalKobo : p.principalKobo + full;
+
+        const cat =
+          p.kind === "EXPLORE"
+            ? p.product?.category?.name ?? "Explore"
+            : planType === "FLEX"
+              ? "Kipit Flex"
+              : "Kipit Lock";
+        const bucket = taxByCategory.get(cat) ?? {
+          principal: 0n,
+          accruedGross: 0n,
+          accruedWht: 0n,
+          accruedNet: 0n,
+        };
+        bucket.principal += p.principalKobo;
+        bucket.accruedGross += accruedBd.grossKobo;
+        bucket.accruedWht += accruedBd.whtKobo;
+        bucket.accruedNet += accruedBd.netKobo;
+        taxByCategory.set(cat, bucket);
+      }
+    }
+
+    const pendingFlexBreaks = await prisma.placement.findMany({
+      where: {
+        status: "ACTIVE",
+        planType: "FLEX",
+        breakRequestedAt: { not: null },
+      },
+      include: { user: { select: { firstName: true, surname: true, email: true } } },
+      orderBy: { breakRequestedAt: "asc" },
+      take: 50,
+    });
+
+    const walletKobo = wallets._sum.balanceKobo ?? 0n;
+    const callKobo = call._sum.balanceKobo ?? 0n;
+    const principalKobo = walletKobo + callKobo + fixedPrincipal + explorePrincipal;
+    const fumKobo = principalKobo + interestAccruedKobo;
+    const users = await prisma.user.count();
+    const pendingKyc = await prisma.kycProfile.count({ where: { status: "PENDING_REVIEW" } });
+    const pendingWithdrawals = await prisma.withdrawalRequest.count({
+      where: { status: "PROCESSING" },
+    });
+    const recentAudit = await prisma.auditEvent.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    });
+    const showAum = canViewAum(req.adminRole);
+
+    res.json({
+      data: {
+        fum: showAum ? koboToNaira(fumKobo) : null,
+        principal: showAum ? koboToNaira(principalKobo) : null,
+        canViewAum: showAum,
+        users,
+        pendingKyc,
+        pendingWithdrawals,
+        interestAccrued: showAum ? koboToNaira(interestAccruedKobo) : 0,
+        interestPayable: showAum ? koboToNaira(interestRemainingKobo) : 0,
+        recentAudit,
+        breakdown: showAum
+          ? {
+              wallet: koboToNaira(walletKobo),
+              call: koboToNaira(callKobo),
+              fixed: koboToNaira(fixedPrincipal),
+              explore: koboToNaira(explorePrincipal),
+              placements: koboToNaira(fixedPrincipal + explorePrincipal),
+              accrued: koboToNaira(interestAccruedKobo),
+              lock: koboToNaira(lockPrincipal),
+              flex: koboToNaira(flexPrincipal),
+              lockUpfront: koboToNaira(lockUpfrontPrincipal),
+              lockAtMaturity: koboToNaira(lockMaturityPrincipal),
+              valueAtMaturity: koboToNaira(valueAtMaturityKobo),
+            }
+          : null,
+        tax: showAum
+          ? {
+              accruedGross: koboToNaira(accruedGrossKobo),
+              accruedWht: koboToNaira(accruedWhtKobo),
+              accruedNet: koboToNaira(interestAccruedKobo),
+              expectedGross: koboToNaira(expectedGrossKobo),
+              expectedWht: koboToNaira(expectedWhtKobo),
+              expectedNet: koboToNaira(expectedNetKobo),
+              byCategory: [...taxByCategory.entries()].map(([category, b]) => ({
+                category,
+                principal: koboToNaira(b.principal),
+                accruedGross: koboToNaira(b.accruedGross),
+                accruedWht: koboToNaira(b.accruedWht),
+                accruedNet: koboToNaira(b.accruedNet),
+              })),
+            }
+          : null,
+        pendingFlexBreaks: pendingFlexBreaks.map((p) => ({
+          id: p.id,
+          userId: p.userId,
+          user: `${p.user.firstName} ${p.user.surname}`.trim(),
+          email: p.user.email,
+          principal: koboToNaira(p.principalKobo),
+          breakRequestedAt: p.breakRequestedAt?.toISOString() ?? null,
+          breakCreditAt: p.breakCreditAt?.toISOString() ?? null,
+        })),
+      },
+    });
+  }),
+);
+
 adminRouter.get(
   "/users",
   requireAdmin,
@@ -716,6 +892,14 @@ adminRouter.post(
       tempPassword,
       accountType: body.accountType,
     }).catch((err) => console.warn("[welcome-email]", err));
+  await createUserNotification({
+    userId: user.id,
+    title: "Welcome to Kipit",
+    body: "Your Kipit account was created. Sign in and complete your profile when ready.",
+    href: "/invest",
+    pushKind: "general",
+    skipPush: true,
+  }).catch(() => undefined);
 
     res.status(201).json({
       data: {
@@ -876,6 +1060,105 @@ adminRouter.get(
   }),
 );
 
+/** Global placements register (ADM — operations). */
+adminRouter.get(
+  "/placements",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const q = z
+      .object({
+        userId: z.string().optional(),
+        q: z.string().optional(),
+        kind: z.enum(["FIXED", "EXPLORE"]).optional(),
+        planType: z.enum(["LOCK", "FLEX"]).optional(),
+        interestPayout: z.enum(["AT_MATURITY", "UPFRONT"]).optional(),
+        amountMin: z.coerce.number().optional(),
+        amountMax: z.coerce.number().optional(),
+        placedFrom: z.string().optional(),
+        placedTo: z.string().optional(),
+        maturityFrom: z.string().optional(),
+        maturityTo: z.string().optional(),
+        status: z.enum(["active", "matured", "broken", "break pending"]).optional(),
+        page: z.coerce.number().int().positive().default(1),
+        pageSize: z.coerce.number().int().positive().max(200).default(100),
+      })
+      .parse(req.query);
+
+    const where: Prisma.PlacementWhereInput = {};
+    if (q.userId) where.userId = q.userId;
+    if (q.kind) where.kind = q.kind;
+    if (q.planType) where.planType = q.planType;
+    if (q.interestPayout) where.interestPayout = q.interestPayout;
+    if (q.amountMin != null || q.amountMax != null) {
+      where.principalKobo = {};
+      if (q.amountMin != null) where.principalKobo.gte = nairaToKobo(q.amountMin);
+      if (q.amountMax != null) where.principalKobo.lte = nairaToKobo(q.amountMax);
+    }
+    if (q.placedFrom || q.placedTo) {
+      where.startDate = {};
+      if (q.placedFrom) where.startDate.gte = new Date(q.placedFrom);
+      if (q.placedTo) {
+        const end = new Date(q.placedTo);
+        end.setUTCHours(23, 59, 59, 999);
+        where.startDate.lte = end;
+      }
+    }
+    if (q.maturityFrom || q.maturityTo) {
+      where.maturityDate = {};
+      if (q.maturityFrom) where.maturityDate.gte = new Date(q.maturityFrom);
+      if (q.maturityTo) {
+        const end = new Date(q.maturityTo);
+        end.setUTCHours(23, 59, 59, 999);
+        where.maturityDate.lte = end;
+      }
+    }
+    if (q.q?.trim()) {
+      const term = q.q.trim();
+      where.user = {
+        OR: [
+          { email: { contains: term, mode: "insensitive" } },
+          { firstName: { contains: term, mode: "insensitive" } },
+          { surname: { contains: term, mode: "insensitive" } },
+          { phone: { contains: term.replace(/\D/g, "") } },
+        ],
+      };
+    }
+
+    let rows = await prisma.placement.findMany({
+      where,
+      include: {
+        user: { select: { id: true, firstName: true, surname: true, email: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 500,
+    });
+
+    if (q.status) {
+      rows = rows.filter((p) => placementDisplayStatus(p) === q.status);
+    }
+
+    const total = rows.length;
+    const start = (q.page - 1) * q.pageSize;
+    const pageRows = rows.slice(start, start + q.pageSize);
+
+    res.json({
+      data: pageRows.map((p) =>
+        serializeAdminPlacement(p, {
+          id: p.userId,
+          name: `${p.user.firstName} ${p.user.surname}`.trim(),
+          email: p.user.email,
+        }),
+      ),
+      meta: {
+        page: q.page,
+        pageSize: q.pageSize,
+        total,
+        totalPages: Math.max(1, Math.ceil(total / q.pageSize)),
+      },
+    });
+  }),
+);
+
 adminRouter.get(
   "/users/:userId/placements",
   requireAdmin,
@@ -887,24 +1170,12 @@ adminRouter.get(
     });
     res.json({
       data: rows.map((p) => {
+        const detail = serializeAdminPlacement(p);
         const interest = placementInterestKobo(p);
-        const accrued = accruedInterestToDateKobo(p);
         return {
-          id: p.id,
-          name: p.name,
-          kind: p.kind,
-          status: p.status,
-          principal: koboToNaira(p.principalKobo),
-          ratePct: p.rateBps / 10000,
-          tenorDays: p.tenorDays,
-          expectedInterest: koboToNaira(interest),
+          ...detail,
           expectedPayout: koboToNaira(p.principalKobo + interest),
-          accrued: koboToNaira(accrued),
-          interestOverride: p.interestOverrideKobo != null,
-          maturityInstruction: p.maturityInstruction,
-          startDate: p.startDate,
-          maturityDate: p.maturityDate,
-          createdAt: p.createdAt,
+          expectedInterest: detail.expectedNet ?? koboToNaira(interest),
         };
       }),
     });
@@ -957,6 +1228,8 @@ adminRouter.post(
         kind: z.enum(["FIXED", "CALL", "EXPLORE"]).default("FIXED"),
         amount: z.number().positive(),
         tenorDays: z.number().int().positive().optional(),
+        planType: z.enum(["LOCK", "FLEX"]).optional(),
+        interestPayout: z.enum(["AT_MATURITY", "UPFRONT"]).optional(),
         name: z.string().min(1).default("Admin placement"),
         productId: z.string().optional(),
         maturityInstruction: z.enum(["WALLET", "ROLLOVER", "PAYOUT"]).default("WALLET"),
@@ -991,6 +1264,8 @@ adminRouter.post(
 
     if (body.kind === "CALL") {
       const { moveWalletToCall } = await import("../services/money.js");
+      const { interestValueDate } = await import("../services/system-settings.js");
+      const value = await interestValueDate();
       await moveWalletToCall(userId, amountKobo, `admin-call-${nanoid(10)}`);
       await writeAudit({
         actorAdminId: req.adminId,
@@ -1001,12 +1276,18 @@ adminRouter.post(
       });
       await notifyCustomer({
         userId,
-        title: "Call Account funded",
-        body: `₦${body.amount.toLocaleString()} moved into Call Account by Kipit operations.`,
+        title: "Added to Call Account",
+        body: `₦${body.amount.toLocaleString()} moved from your wallet into Call Account.${
+          value.sameDay
+            ? " Interest starts today."
+            : ` Interest starts ${value.valueDate} (after ${value.cutoff} Lagos value cut-off).`
+        }`,
         href: "/call-account",
         emailKind: "investment",
         amountNaira: body.amount,
-        emailDetail: "Call Account",
+        emailDetail: value.sameDay
+          ? "Call Account top-up — interest starts today"
+          : `Call Account top-up — interest starts ${value.valueDate}`,
       }).catch(() => undefined);
       const call = await ensureUserCall(userId);
       res.status(201).json({
@@ -1014,6 +1295,10 @@ adminRouter.post(
       });
       return;
     }
+
+    const planType = body.planType ?? "LOCK";
+    const interestPayout =
+      planType === "FLEX" ? "AT_MATURITY" : (body.interestPayout ?? "AT_MATURITY");
 
     let rateBps = 0;
     let tenorDays = body.tenorDays ?? 90;
@@ -1024,20 +1309,49 @@ adminRouter.post(
       if (!body.productId) throw new AppError(400, "productId required", "PRODUCT_REQUIRED");
       const product = await prisma.product.findUnique({ where: { id: body.productId } });
       if (!product) throw new AppError(404, "Product not found", "NOT_FOUND");
+      if (product.availability !== "OPEN") {
+        throw new AppError(400, "Product is not open for new placements", "PRODUCT_UNAVAILABLE");
+      }
+      if (amountKobo < product.minimumKobo) {
+        throw new AppError(400, "Below product minimum", "BELOW_MINIMUM");
+      }
       rateBps = product.rateBps;
       tenorDays = product.tenorDays;
       productId = product.id;
       name = product.name;
-    } else if (body.ratePct == null && body.expectedInterest == null && body.expectedPayout == null) {
-      const bands = await prisma.rateBand.findMany();
-      const band = bands.find(
-        (b) => tenorDays >= b.minDays && (b.maxDays == null || tenorDays <= b.maxDays),
-      );
-      if (!band) throw new AppError(400, "No rate band for tenor", "RATE_BAND_MISSING");
-      rateBps = band.rateBps;
+    } else {
+      if (body.amount < PLAN_MIN_NAIRA) {
+        throw new AppError(
+          400,
+          `Minimum fixed placement is ₦${PLAN_MIN_NAIRA.toLocaleString("en-NG")}`,
+          "BELOW_MINIMUM",
+        );
+      }
+      if (body.ratePct == null && body.expectedInterest == null && body.expectedPayout == null) {
+        const resolved = await resolvePlanRate({
+          planType,
+          tenorDays,
+          interestPayout,
+        });
+        rateBps = resolved.rateBps;
+      }
+      const genericName =
+        name === "Admin placement" || name === "Fixed plan" || name.toLowerCase() === "my plan";
+      if (genericName) {
+        name = displayPlanName(planType, tenorDays);
+      }
     }
 
-    const startDate = body.startDate ? new Date(body.startDate) : new Date();
+    let startDate: Date;
+    if (body.startDate) {
+      startDate = new Date(body.startDate);
+    } else if (body.kind === "FIXED") {
+      const { interestValueDate, lagosDayStartUtc } = await import("../services/system-settings.js");
+      const value = await interestValueDate();
+      startDate = lagosDayStartUtc(value.valueDate);
+    } else {
+      startDate = new Date();
+    }
     let maturityDate: Date;
     if (body.maturityDate) {
       maturityDate = new Date(body.maturityDate);
@@ -1046,7 +1360,11 @@ adminRouter.post(
       }
     } else {
       maturityDate = new Date(startDate);
-      maturityDate.setDate(maturityDate.getDate() + tenorDays);
+      if (body.kind === "FIXED") {
+        maturityDate.setUTCDate(maturityDate.getUTCDate() + tenorDays);
+      } else {
+        maturityDate.setDate(maturityDate.getDate() + tenorDays);
+      }
     }
 
     if (body.ratePct != null) {
@@ -1126,6 +1444,8 @@ adminRouter.post(
         ledgerAccountId: placementAccount.id,
         accruedKobo,
         interestOverrideKobo,
+        // C9 — persist Lock/Flex so placements list, dashboard and Flex break rules work.
+        ...(body.kind !== "EXPLORE" ? { planType, interestPayout } : {}),
         ...(body.status ? { status: body.status } : {}),
       },
     });
@@ -1138,6 +1458,8 @@ adminRouter.post(
       after: {
         amount: body.amount,
         kind: placement.kind,
+        planType: placement.planType,
+        interestPayout: placement.interestPayout,
         startDate: startDate.toISOString(),
         maturityDate: maturityDate.toISOString(),
         rateBps,
@@ -1160,6 +1482,8 @@ adminRouter.post(
         id: placement.id,
         name: placement.name,
         kind: placement.kind,
+        planType: placement.planType,
+        interestPayout: placement.interestPayout,
         amount: body.amount,
         ratePct: rateBps / 10000,
         tenorDays,
@@ -2393,25 +2717,50 @@ adminRouter.get(
     const { ensureRatesApplied, rateBandAdminExtras } = await import("../services/rates.js");
     await ensureRatesApplied();
 
-    const bands = await prisma.rateBand.findMany({ orderBy: { minDays: "asc" } });
+    const { formatRatePair } = await import("../services/wht.js");
+    const bands = await prisma.rateBand.findMany({
+      orderBy: [{ family: "asc" }, { standardTenorDays: "asc" }, { payout: "asc" }, { minDays: "asc" }],
+    });
     const placements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
-      select: { kind: true, principalKobo: true, tenorDays: true },
+      select: {
+        kind: true,
+        principalKobo: true,
+        tenorDays: true,
+        planType: true,
+        interestPayout: true,
+      },
     });
     const data = await Promise.all(
       bands.map(async (b) => {
-        const isCallBand = b.code.toUpperCase() === "CALL" || (b.minDays === 0 && b.maxDays === 0);
+        const isCallBand =
+          b.family === "CALL" ||
+          b.code.toUpperCase() === "CALL" ||
+          (b.minDays === 0 && b.maxDays === 0);
         const matching = placements.filter((p) => {
           if (isCallBand) return p.kind === "CALL";
           if (p.kind === "CALL") return false;
           const days = p.tenorDays ?? 0;
+          const planType = p.planType ?? "LOCK";
+          if (b.family === "LOCK" || b.family === "FLEX") {
+            if (planType !== b.family) return false;
+            if (b.family === "LOCK") {
+              const payout = p.interestPayout ?? "AT_MATURITY";
+              if (b.payout && payout !== b.payout) return false;
+            }
+            if (b.standardTenorDays != null) return days === b.standardTenorDays;
+          }
           if (b.maxDays == null) return days >= b.minDays;
           return days >= b.minDays && days <= b.maxDays;
         });
         const principalKobo = matching.reduce((s, p) => s + p.principalKobo, 0n);
         const extras = await rateBandAdminExtras(b.id, b.rateBps);
+        const pair = formatRatePair(b.rateBps);
         return {
           ...b,
+          ratePct: pair.netRatePct,
+          grossRatePct: pair.grossRatePct,
+          rateLabel: pair.label,
           previousBps: extras.previousBps,
           scheduledBps: extras.scheduledBps,
           scheduledFrom: extras.scheduledFrom,
@@ -2435,7 +2784,8 @@ adminRouter.post(
     const body = z
       .object({
         bandId: z.string(),
-        proposedBps: z.number().int().positive().max(4000),
+        // rateBps scale = percent × 10_000 (e.g. 22% → 220000). Cap ~40% net.
+        proposedBps: z.number().int().positive().max(400_000),
         effectiveFrom: z.string(),
         reason: z.string().optional(),
       })
@@ -2467,6 +2817,7 @@ adminRouter.post(
         makerAdminId: req.adminId!,
       },
     });
+    const { formatRatePair } = await import("../services/wht.js");
     await writeAudit({
       actorAdminId: req.adminId,
       action: "rate.propose",
@@ -2474,8 +2825,13 @@ adminRouter.post(
       entityId: row.id,
       after: {
         bandId: body.bandId,
+        code: band.code,
+        family: band.family,
+        payout: band.payout,
         proposedBps: body.proposedBps,
         previousBps: band.rateBps,
+        proposedRate: formatRatePair(body.proposedBps),
+        previousRate: formatRatePair(band.rateBps),
         effectiveFrom: body.effectiveFrom,
       },
     });
@@ -2555,12 +2911,18 @@ adminRouter.post(
       });
     }
 
+    const { formatRatePair } = await import("../services/wht.js");
     await writeAudit({
       actorAdminId: req.adminId,
       action: body.approve ? "rate.approved" : "rate.rejected",
       entityType: "RateChangeRequest",
       entityId: row.id,
-      after: { approve: body.approve, bandId: row.bandId, proposedBps: row.proposedBps },
+      after: {
+        approve: body.approve,
+        bandId: row.bandId,
+        proposedBps: row.proposedBps,
+        proposedRate: formatRatePair(row.proposedBps),
+      },
     });
 
     res.json({ data: { id: row.id, status: body.approve ? "APPROVED" : "REJECTED" } });
@@ -2571,6 +2933,7 @@ adminRouter.get(
   "/rates/requests",
   requireAdmin,
   asyncHandler(async (_req, res) => {
+    const { formatRatePair } = await import("../services/wht.js");
     const rows = await prisma.rateChangeRequest.findMany({
       include: { band: true },
       orderBy: { createdAt: "desc" },
@@ -2589,24 +2952,35 @@ adminRouter.get(
     const admins = await prisma.adminUser.findMany({ where: { id: { in: adminIds } } });
     const byId = Object.fromEntries(admins.map((a) => [a.id, a]));
     res.json({
-      data: rows.map((r) => ({
-        id: r.id,
-        bandId: r.bandId,
-        band: r.band.label,
-        code: r.band.code,
-        currentBps: r.previousBps ?? r.band.rateBps,
-        proposedBps: r.proposedBps,
-        currentRate: ((r.previousBps ?? r.band.rateBps) / 10000),
-        proposedRate: r.proposedBps / 10000,
-        effectiveFrom: r.effectiveFrom,
-        reason: r.reason,
-        status: r.status,
-        appliedAt: r.appliedAt,
-        submittedBy: byId[r.makerAdminId]?.name ?? r.makerAdminId,
-        decidedBy: r.checkerAdminId ? (byId[r.checkerAdminId]?.name ?? r.checkerAdminId) : null,
-        decidedAt: r.decidedAt,
-        createdAt: r.createdAt,
-      })),
+      data: rows.map((r) => {
+        const currentBps = r.previousBps ?? r.band.rateBps;
+        const currentPair = formatRatePair(currentBps);
+        const proposedPair = formatRatePair(r.proposedBps);
+        return {
+          id: r.id,
+          bandId: r.bandId,
+          band: r.band.label,
+          code: r.band.code,
+          family: r.band.family,
+          payout: r.band.payout,
+          currentBps,
+          proposedBps: r.proposedBps,
+          currentRate: currentPair.netRatePct,
+          proposedRate: proposedPair.netRatePct,
+          currentGrossRate: currentPair.grossRatePct,
+          proposedGrossRate: proposedPair.grossRatePct,
+          currentRateLabel: currentPair.label,
+          proposedRateLabel: proposedPair.label,
+          effectiveFrom: r.effectiveFrom,
+          reason: r.reason,
+          status: r.status,
+          appliedAt: r.appliedAt,
+          submittedBy: byId[r.makerAdminId]?.name ?? r.makerAdminId,
+          decidedBy: r.checkerAdminId ? (byId[r.checkerAdminId]?.name ?? r.checkerAdminId) : null,
+          decidedAt: r.decidedAt,
+          createdAt: r.createdAt,
+        };
+      }),
     });
   }),
 );
@@ -2915,6 +3289,8 @@ adminRouter.post(
         description: z.string().min(10).optional(),
         rateBps: z.number().int().positive().optional(),
         ratePct: z.number().positive().optional(),
+        grossRatePct: z.number().positive().optional(),
+        whtRatePct: z.number().min(0).max(100).optional(),
         tenorDays: z.number().int().positive(),
         minimum: z.number().positive(),
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
@@ -2936,10 +3312,15 @@ adminRouter.post(
       categoryId = cat.id;
     }
 
-    const rateBps =
+    const whtPct = body.whtRatePct ?? 10;
+    let rateBps =
       body.rateBps ??
       (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
-    if (rateBps == null) throw new AppError(400, "rateBps or ratePct required", "RATE_REQUIRED");
+    if (rateBps == null && body.grossRatePct != null) {
+      const netPct = body.grossRatePct * (1 - whtPct / 100);
+      rateBps = Math.round(netPct * 10000);
+    }
+    if (rateBps == null) throw new AppError(400, "rateBps, ratePct or grossRatePct required", "RATE_REQUIRED");
 
     const slug =
       body.slug?.trim() ||
@@ -2958,6 +3339,7 @@ adminRouter.post(
         description: body.description,
         details: toPrismaJson(body.details),
         rateBps,
+        whtRatePct: whtPct,
         tenorDays: body.tenorDays,
         minimumKobo: BigInt(Math.round(body.minimum * 100)),
         availability: body.availability ?? "OPEN",

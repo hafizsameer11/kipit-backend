@@ -97,10 +97,11 @@ export async function getOpsLimits(): Promise<OpsLimits> {
     tier1DailyWithdrawal: rowNumber(limits, "l-t1-day", 200_000),
     tier2DailyWithdrawal: rowNumber(limits, "l-t2-day", 5_000_000),
     singlePayoutMax: rowNumber(limits, "l-single", 10_000_000),
-    minFixedPlacement: rowNumber(limits, "l-min-fixed", 100_000),
+    minFixedPlacement: rowNumber(limits, "l-min-fixed", 1_000),
     minCallDeposit: rowNumber(limits, "l-min-call", 10_000),
     withdrawalFee: rowNumber(fees, "f-withdraw", 50),
-    cardFundingPct: rowNumber(fees, "f-card", 1.4),
+    // B7 — fee off until Rubipay (C1); keep setting key for admin override.
+    cardFundingPct: rowNumber(fees, "f-card", 0),
   };
 }
 

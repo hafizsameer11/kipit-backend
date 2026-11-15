@@ -13,6 +13,52 @@ import { writeAudit } from "../services/audit.js";
 import { asProductDetails } from "../lib/product-details.js";
 import { rejectIfMaintenance } from "../middleware/maintenance.js";
 import { assertFeatureEnabled } from "../services/app-access.js";
+import { formatRatePair, interestBreakdownFromNetRate } from "../services/wht.js";
+
+function serializeExploreProduct(p: {
+  id: string;
+  slug: string;
+  name: string;
+  blurb: string;
+  description: string | null;
+  rateBps: number;
+  whtRatePct: number;
+  tenorDays: number;
+  minimumKobo: bigint;
+  availability: string;
+  issuer: string | null;
+  largeTicket: boolean;
+  termsVersion: string;
+  details: unknown;
+  category: { slug: string; name: string };
+}) {
+  const pair = formatRatePair(p.rateBps);
+  const sample = interestBreakdownFromNetRate(p.minimumKobo, p.rateBps, p.tenorDays);
+  return {
+    id: p.id,
+    slug: p.slug,
+    name: p.name,
+    blurb: p.blurb,
+    description: p.description,
+    ratePct: pair.netRatePct,
+    grossRatePct: pair.grossRatePct,
+    whtRatePct: p.whtRatePct,
+    rateLabel: pair.label,
+    tenorDays: p.tenorDays,
+    minimum: koboToNaira(p.minimumKobo),
+    availability: p.availability,
+    issuer: p.issuer,
+    largeTicket: p.largeTicket || p.minimumKobo >= 500_000_000n,
+    category: { slug: p.category.slug, name: p.category.name },
+    termsVersion: p.termsVersion,
+    details: asProductDetails(p.details),
+    sampleInterest: {
+      gross: koboToNaira(sample.grossKobo),
+      wht: koboToNaira(sample.whtKobo),
+      net: koboToNaira(sample.netKobo),
+    },
+  };
+}
 
 export const exploreRouter = Router();
 exploreRouter.use(rejectIfMaintenance);
@@ -45,22 +91,7 @@ exploreRouter.get(
       orderBy: { name: "asc" },
     });
     res.json({
-      data: products.map((p) => ({
-        id: p.id,
-        slug: p.slug,
-        name: p.name,
-        blurb: p.blurb,
-        description: p.description,
-        ratePct: p.rateBps / 10000,
-        tenorDays: p.tenorDays,
-        minimum: koboToNaira(p.minimumKobo),
-        availability: p.availability,
-        issuer: p.issuer,
-        largeTicket: p.largeTicket || p.minimumKobo >= 500_000_000n,
-        category: { slug: p.category.slug, name: p.category.name },
-        termsVersion: p.termsVersion,
-        details: asProductDetails(p.details),
-      })),
+      data: products.map((p) => serializeExploreProduct(p)),
     });
   }),
 );
@@ -75,22 +106,7 @@ exploreRouter.get(
     });
     if (!product) throw new AppError(404, "Product not found", "PRODUCT_NOT_FOUND");
     res.json({
-      data: {
-        id: product.id,
-        slug: product.slug,
-        name: product.name,
-        blurb: product.blurb,
-        description: product.description,
-        ratePct: product.rateBps / 10000,
-        tenorDays: product.tenorDays,
-        minimum: koboToNaira(product.minimumKobo),
-        availability: product.availability,
-        issuer: product.issuer,
-        largeTicket: product.largeTicket || product.minimumKobo >= 500_000_000n,
-        category: { slug: product.category.slug, name: product.category.name },
-        termsVersion: product.termsVersion,
-        details: asProductDetails(product.details),
-      },
+      data: serializeExploreProduct(product),
     });
   }),
 );

@@ -21,6 +21,7 @@ import { giftsRouter } from "./routes/gifts.js";
 import { chatRouter } from "./routes/chat.js";
 import { webhooksRouter } from "./routes/webhooks.js";
 import { runMaturityEngine } from "./jobs/maturity.js";
+import { runFlexBreakCredits } from "./jobs/flex-break.js";
 import { runKycVerificationJob } from "./jobs/kyc-verify.js";
 import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import { runAutoInvestJob } from "./jobs/auto-invest.js";
@@ -137,7 +138,8 @@ export function createApp() {
         return res.status(404).json({ error: { message: "Not found" } });
       }
       const result = await runMaturityEngine();
-      res.json({ data: result });
+      const flexBreaks = await runFlexBreakCredits();
+      res.json({ data: { ...result, flexBreaks } });
     }),
   );
 

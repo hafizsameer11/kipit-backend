@@ -11,8 +11,10 @@ import {
   ensureUserCall,
   ensureUserWallet,
   getWalletBalanceKobo,
-  placementInterestKobo,
 } from "../services/money.js";
+import { serializePlacementHolding } from "../services/placement-display.js";
+
+const serializeHolding = serializePlacementHolding;
 
 export const portfolioRouter = Router();
 
@@ -34,31 +36,31 @@ portfolioRouter.get(
     const exploreTotal = explore.reduce((s, p) => s + markToMarket(p), 0n);
     const total = wallet.balanceKobo + call.balanceKobo + fixedTotal + exploreTotal;
 
+    const valueAtMaturityTotal = placements.reduce((s, p) => {
+      const h = serializeHolding(p);
+      return s + BigInt(Math.round(h.valueAtMaturity * 100));
+    }, 0n);
+
+    const accruedWeek = placements.reduce((s, p) => {
+      const accrued = accruedInterestToDateKobo(p);
+      // Approximate week share of accrued (full accrued shown; week filter is client-side too).
+      return s + accrued;
+    }, 0n);
+
     res.json({
       data: {
         total: koboToNaira(total),
+        valueAtMaturity: koboToNaira(
+          wallet.balanceKobo + call.balanceKobo + valueAtMaturityTotal,
+        ),
+        interestThisWeek: koboToNaira(accruedWeek),
         allocation: {
           wallet: koboToNaira(wallet.balanceKobo),
           call: koboToNaira(call.balanceKobo),
           fixed: koboToNaira(fixedTotal),
           explore: koboToNaira(exploreTotal),
         },
-        holdings: placements.map((p) => ({
-          id: p.id,
-          kind: p.kind,
-          name: p.name,
-          principal: koboToNaira(p.principalKobo),
-          ratePct: p.rateBps / 10000,
-          tenorDays: p.tenorDays,
-          startDate: p.startDate.toISOString().slice(0, 10),
-          maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
-          accrued: koboToNaira(accruedInterestToDateKobo(p)),
-          expectedInterest:
-            p.tenorDays != null || p.interestOverrideKobo != null
-              ? koboToNaira(placementInterestKobo(p))
-              : null,
-          status: p.status,
-        })),
+        holdings: placements.map((p) => serializeHolding(p)),
       },
     });
   }),
@@ -83,21 +85,7 @@ portfolioRouter.get(
       }));
     res.json({
       data: {
-        id: p.id,
-        kind: p.kind,
-        name: p.name,
-        principal: koboToNaira(p.principalKobo),
-        ratePct: p.rateBps / 10000,
-        tenorDays: p.tenorDays,
-        startDate: p.startDate.toISOString().slice(0, 10),
-        maturityDate: p.maturityDate?.toISOString().slice(0, 10) ?? null,
-        accrued: koboToNaira(accruedInterestToDateKobo(p)),
-        expectedInterest:
-          p.tenorDays != null || p.interestOverrideKobo != null
-            ? koboToNaira(placementInterestKobo(p))
-            : null,
-        status: p.status,
-        maturityInstruction: p.maturityInstruction,
+        ...serializeHolding(p),
         // Additive — empty when no product docs; clients keep local fallbacks.
         documents,
         product: p.product
@@ -154,16 +142,24 @@ portfolioRouter.get(
       orderBy: { maturityDate: "asc" },
     });
     res.json({
-      data: items.map((p) => ({
-        id: p.id,
-        name: p.name,
-        amount: koboToNaira(p.principalKobo),
-        maturityDate: p.maturityDate!.toISOString().slice(0, 10),
-        daysLeft: Math.max(
-          0,
-          Math.ceil((p.maturityDate!.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
-        ),
-      })),
+      data: items.map((p) => {
+        const h = serializeHolding(p);
+        return {
+          id: p.id,
+          name: h.name,
+          planType: h.planType,
+          amount: h.principal,
+          finalValue: h.valueAtMaturity,
+          expectedNet: h.expectedNet,
+          expectedGross: h.expectedGross,
+          expectedWht: h.expectedWht,
+          maturityDate: p.maturityDate!.toISOString().slice(0, 10),
+          daysLeft: Math.max(
+            0,
+            Math.ceil((p.maturityDate!.getTime() - Date.now()) / (24 * 60 * 60 * 1000)),
+          ),
+        };
+      }),
     });
   }),
 );

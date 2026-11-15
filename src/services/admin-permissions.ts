@@ -4,13 +4,16 @@ import type { AdminRoleName } from "../middleware/admin.js";
 
 /** Permission ids — keep in sync with kipit-admin `admin-team-data` PERMISSION_GROUPS. */
 export const ALL_ADMIN_PERMISSIONS = [
+  "dashboard.view",
   "users.view",
+  "users.profile",
   "users.freeze",
   "users.sessions",
   "kyc.review",
   "kyc.decide",
   "aml.investigate",
   "aml.report",
+  "placement.view",
   "txn.view",
   "withdrawal.process",
   "withdrawal.decline",
@@ -42,13 +45,17 @@ export type AdminRoleKey =
 const DEFAULT_GRANTS: Record<AdminRoleKey, readonly string[]> = {
   "global-admin": ALL_ADMIN_PERMISSIONS,
   operations: [
+    "dashboard.view",
     "users.view",
+    "users.profile",
     "users.freeze",
+    "placement.view",
     "txn.view",
     "withdrawal.process",
     "withdrawal.decline",
     "recon.resolve",
     "adjustment.request",
+    "product.manage",
     "audit.view",
   ],
   compliance: [
@@ -71,7 +78,7 @@ const DEFAULT_GRANTS: Record<AdminRoleKey, readonly string[]> = {
     "audit.view",
   ],
   support: ["users.view", "users.sessions", "txn.view", "support.reply", "marketing.manage"],
-  "read-only": ["users.view", "txn.view", "audit.view"],
+  "read-only": ["dashboard.view", "users.view", "txn.view", "audit.view"],
   marketing: ["users.view", "txn.view", "marketing.manage", "audit.view"],
 };
 

@@ -9,7 +9,13 @@ import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { koboToNaira } from "../lib/crypto.js";
+import { formatReportDate, formatReportDateTime } from "../lib/report-dates.js";
 import { writeAudit } from "../services/audit.js";
+import {
+  interestBreakdownFromNetAmount,
+  interestBreakdownFromNetRate,
+} from "../services/wht.js";
+import { displayPlanName } from "../services/lock-flex-rates.js";
 
 type AdminRequest = Request & { adminId?: string; adminRole?: string };
 
@@ -713,7 +719,26 @@ const REPORT_PACKS = [
   { id: "rp-audit", name: "Console audit extract", category: "Operations", description: "Admin actions for the period.", formats: ["CSV"], cadence: "On demand", owner: "Risk" },
   { id: "rp-growth", name: "Acquisition & activation", category: "Growth", description: "Signups and funded customers.", formats: ["XLSX"], cadence: "Weekly", owner: "Growth" },
   { id: "rp-ai", name: "Ask AI usage", category: "Growth", description: "Assistant sessions and handoffs.", formats: ["CSV"], cadence: "Weekly", owner: "Product" },
+  {
+    id: "rp-wht",
+    name: "Withholding tax (WHT)",
+    category: "Finance",
+    description: "Interest gross, 10% WHT and net per client investment for the period.",
+    formats: ["CSV"],
+    cadence: "On demand",
+    owner: "Finance",
+  },
 ];
+
+function customerLabel(user: {
+  firstName: string;
+  surname?: string | null;
+  email?: string | null;
+} | null | undefined) {
+  if (!user) return { name: "", email: "" };
+  const name = `${user.firstName ?? ""} ${user.surname ?? ""}`.trim();
+  return { name, email: user.email ?? "" };
+}
 
 adminConsoleRouter.get(
   "/reports",
@@ -739,19 +764,26 @@ adminConsoleRouter.get(
         });
         return {
           ...p,
-          lastRun: last?.startedAt?.toISOString() ?? "Never",
+          lastRun: last?.startedAt
+            ? formatReportDateTime(last.startedAt)
+            : "Never",
+          lastRunAt: last?.startedAt?.toISOString() ?? null,
         };
       }),
     );
     res.json({
       data: {
         packs,
-        schedules,
+        schedules: schedules.map((s) => ({
+          ...s,
+          next: s.next ? formatReportDate(s.next) : s.next,
+        })),
         exports: exports.map((e) => ({
           id: e.id,
           name: e.jobName.replace(/^report\./, ""),
           status: e.status,
           at: e.startedAt.toISOString(),
+          atDisplay: formatReportDateTime(e.startedAt),
           detail: e.detail,
         })),
         generatedToday: await prisma.jobRun.count({
@@ -765,46 +797,244 @@ adminConsoleRouter.get(
   }),
 );
 
+async function buildWhtReport(
+  from: Date,
+  to: Date,
+): Promise<{ headers: string[]; rows: string[][]; rowCount: number }> {
+  const headers = [
+    "Client",
+    "Email",
+    "Investment",
+    "Event date",
+    "Gross interest (₦)",
+    "WHT (₦)",
+    "Net interest (₦)",
+  ];
+  const rows: string[][] = [];
+  let totalGross = 0;
+  let totalWht = 0;
+  let totalNet = 0;
+
+  const interestEntries = await prisma.journalEntry.findMany({
+    where: { kind: "INTEREST", createdAt: { gte: from, lte: to } },
+    orderBy: { createdAt: "asc" },
+    take: 5000,
+  });
+  const placementIds = new Set<string>();
+  for (const e of interestEntries) {
+    const meta = e.metadata && typeof e.metadata === "object" ? (e.metadata as Record<string, unknown>) : {};
+    if (typeof meta.placementId === "string") placementIds.add(meta.placementId);
+  }
+
+  const matured = await prisma.placement.findMany({
+    where: {
+      maturityDate: { gte: from, lte: to },
+      status: { in: ["MATURED", "CLOSED"] },
+    },
+    include: {
+      user: { select: { firstName: true, surname: true, email: true } },
+    },
+    take: 5000,
+  });
+  for (const p of matured) placementIds.add(p.id);
+
+  const placements = placementIds.size
+    ? await prisma.placement.findMany({
+        where: { id: { in: [...placementIds] } },
+        include: { user: { select: { firstName: true, surname: true, email: true } } },
+      })
+    : [];
+  const placementById = Object.fromEntries(placements.map((p) => [p.id, p]));
+
+  const pushRow = (input: {
+    user: { firstName: string; surname?: string | null; email?: string | null };
+    investment: string;
+    eventDate: Date;
+    netKobo: bigint;
+    rateBps: number;
+  }) => {
+    const bd = interestBreakdownFromNetAmount(input.netKobo, input.rateBps);
+    const gross = koboToNaira(bd.grossKobo);
+    const wht = koboToNaira(bd.whtKobo);
+    const net = koboToNaira(bd.netKobo);
+    const { name, email } = customerLabel(input.user);
+    rows.push([
+      name,
+      email,
+      input.investment,
+      formatReportDate(input.eventDate),
+      gross.toFixed(2),
+      wht.toFixed(2),
+      net.toFixed(2),
+    ]);
+    totalGross += gross;
+    totalWht += wht;
+    totalNet += net;
+  };
+
+  const seenKeys = new Set<string>();
+
+  for (const e of interestEntries) {
+    const meta = e.metadata && typeof e.metadata === "object" ? (e.metadata as Record<string, unknown>) : {};
+    const placementId = typeof meta.placementId === "string" ? meta.placementId : null;
+    let netKobo =
+      typeof meta.netKobo === "string"
+        ? BigInt(meta.netKobo)
+        : typeof meta.netKobo === "number"
+          ? BigInt(Math.trunc(meta.netKobo))
+          : 0n;
+    if (netKobo <= 0n) {
+      const creditLine = await prisma.journalLine.findFirst({
+        where: { entryId: e.id, amountKobo: { gt: 0 } },
+        select: { amountKobo: true },
+      });
+      netKobo = creditLine?.amountKobo ?? 0n;
+    }
+    if (netKobo <= 0n) continue;
+
+    const placement = placementId ? placementById[placementId] : null;
+    const investment =
+      placement != null
+        ? placement.kind === "FIXED"
+          ? displayPlanName(placement.planType ?? "LOCK", placement.tenorDays)
+          : placement.name
+        : e.description?.trim() || "Call / other interest";
+    const user =
+      placement?.user ??
+      (await prisma.journalLine
+        .findFirst({
+          where: { entryId: e.id, account: { userId: { not: null } } },
+          include: {
+            account: {
+              include: {
+                user: { select: { firstName: true, surname: true, email: true } },
+              },
+            },
+          },
+        })
+        .then((l) => l?.account.user)) ?? {
+        firstName: "Customer",
+        surname: "",
+        email: "",
+      };
+    const rateBps = placement?.rateBps ?? 0;
+    const key = `je:${e.id}`;
+    if (seenKeys.has(key)) continue;
+    seenKeys.add(key);
+    pushRow({
+      user,
+      investment,
+      eventDate: e.createdAt,
+      netKobo,
+      rateBps,
+    });
+  }
+
+  for (const p of matured) {
+    const key = `mat:${p.id}`;
+    if (seenKeys.has(key)) continue;
+    const netKobo =
+      p.accruedKobo > 0n
+        ? p.accruedKobo
+        : p.tenorDays != null
+          ? interestBreakdownFromNetRate(p.principalKobo, p.rateBps, p.tenorDays).netKobo
+          : 0n;
+    if (netKobo <= 0n) continue;
+    seenKeys.add(key);
+    const label =
+      p.kind === "FIXED" ? displayPlanName(p.planType ?? "LOCK", p.tenorDays) : p.name;
+    pushRow({
+      user: p.user,
+      investment: label,
+      eventDate: p.maturityDate ?? p.startDate,
+      netKobo,
+      rateBps: p.rateBps,
+    });
+  }
+
+  if (rows.length) {
+    rows.push([
+      "Totals",
+      "",
+      "",
+      "",
+      totalGross.toFixed(2),
+      totalWht.toFixed(2),
+      totalNet.toFixed(2),
+    ]);
+  }
+
+  return { headers, rows, rowCount: rows.length };
+}
+
 async function buildReportExport(
   packId: string,
   from: Date,
   to: Date,
 ): Promise<{ headers: string[]; rows: string[][]; rowCount: number }> {
-  const iso = (d: Date) => d.toISOString();
+  const at = (d: Date) => formatReportDateTime(d);
+  if (packId === "rp-wht") {
+    return buildWhtReport(from, to);
+  }
   if (packId === "rp-ledger") {
-    const headers = ["Reference", "Kind", "Description", "Created at"];
+    const headers = ["Client", "Email", "Reference", "Kind", "Description", "Created at"];
     const entries = await prisma.journalEntry.findMany({
       where: { createdAt: { gte: from, lte: to } },
       orderBy: { createdAt: "asc" },
       take: 5000,
+      include: {
+        lines: {
+          take: 8,
+          include: {
+            account: {
+              include: {
+                user: { select: { firstName: true, surname: true, email: true } },
+              },
+            },
+          },
+        },
+      },
     });
-    const rows = entries.map((e) => [e.reference, e.kind, e.description ?? "", iso(e.createdAt)]);
+    const rows = entries.map((e) => {
+      const userLine = e.lines.find((l) => l.account.user)?.account.user;
+      const { name, email } = customerLabel(userLine);
+      return [name, email, e.reference, e.kind, e.description ?? "", at(e.createdAt)];
+    });
     return { headers, rows, rowCount: rows.length };
   }
   if (packId === "rp-withdrawals") {
-    const headers = ["ID", "User ID", "Amount (₦)", "Status", "Created at"];
+    const headers = ["Client", "Email", "Reference", "Amount (₦)", "Status", "Created at"];
     const items = await prisma.withdrawalRequest.findMany({
       where: { createdAt: { gte: from, lte: to } },
       orderBy: { createdAt: "asc" },
       take: 5000,
+      include: { user: { select: { firstName: true, surname: true, email: true } } },
     });
-    const rows = items.map((w) => [
-      w.id,
-      w.userId,
-      koboToNaira(w.amountKobo).toFixed(2),
-      w.status,
-      iso(w.createdAt),
-    ]);
+    const rows = items.map((w) => {
+      const { name, email } = customerLabel(w.user);
+      return [
+        name,
+        email,
+        w.reference,
+        koboToNaira(w.amountKobo).toFixed(2),
+        w.status,
+        at(w.createdAt),
+      ];
+    });
     return { headers, rows, rowCount: rows.length };
   }
   if (packId === "rp-support") {
-    const headers = ["ID", "User ID", "Category", "Subject", "Status", "Created at"];
+    const headers = ["Client", "Email", "Ticket", "Category", "Subject", "Status", "Created at"];
     const items = await prisma.supportTicket.findMany({
       where: { createdAt: { gte: from, lte: to } },
       orderBy: { createdAt: "asc" },
       take: 5000,
+      include: { user: { select: { firstName: true, surname: true, email: true } } },
     });
-    const rows = items.map((t) => [t.id, t.userId, t.category, t.subject, t.status, iso(t.createdAt)]);
+    const rows = items.map((t) => {
+      const { name, email } = customerLabel(t.user);
+      return [name, email, t.id, t.category, t.subject, t.status, at(t.createdAt)];
+    });
     return { headers, rows, rowCount: rows.length };
   }
   if (packId === "rp-audit") {
@@ -821,61 +1051,103 @@ async function buildReportExport(
       e.entityId ?? "",
       e.actorAdminId ?? "",
       e.ipAddress ?? "",
-      iso(e.createdAt),
+      at(e.createdAt),
     ]);
     return { headers, rows, rowCount: rows.length };
   }
   if (packId === "rp-ai") {
-    const headers = ["Session ID", "User ID", "Messages", "Flagged", "Created at"];
+    const headers = ["Client", "Email", "Session ID", "Messages", "Flagged", "Created at"];
     const sessions = await prisma.chatSession.findMany({
       where: { createdAt: { gte: from, lte: to } },
-      include: { _count: { select: { messages: true } } },
+      include: {
+        _count: { select: { messages: true } },
+        user: { select: { firstName: true, surname: true, email: true } },
+      },
       orderBy: { createdAt: "asc" },
       take: 5000,
     });
-    const rows = sessions.map((s) => [
-      s.id,
-      s.userId,
-      String(s._count.messages),
-      s.flagged ? "yes" : "no",
-      iso(s.createdAt),
-    ]);
+    const rows = sessions.map((s) => {
+      const { name, email } = customerLabel(s.user);
+      return [name, email, s.id, String(s._count.messages), s.flagged ? "yes" : "no", at(s.createdAt)];
+    });
     return { headers, rows, rowCount: rows.length };
   }
   if (packId === "rp-kyc") {
-    const headers = ["User ID", "Email", "KYC tier", "Frozen", "Created at"];
+    const headers = ["Client", "Email", "User ID", "KYC tier", "Frozen", "Joined"];
     const users = await prisma.user.findMany({
       orderBy: { createdAt: "asc" },
       take: 5000,
-      select: { id: true, email: true, kycTier: true, frozen: true, createdAt: true },
+      select: {
+        id: true,
+        firstName: true,
+        surname: true,
+        email: true,
+        kycTier: true,
+        frozen: true,
+        createdAt: true,
+      },
     });
-    const rows = users.map((u) => [u.id, u.email ?? "", u.kycTier, u.frozen ? "yes" : "no", iso(u.createdAt)]);
+    const rows = users.map((u) => {
+      const { name, email } = customerLabel(u);
+      return [name, email, u.id, u.kycTier, u.frozen ? "yes" : "no", formatReportDate(u.createdAt)];
+    });
     return { headers, rows, rowCount: rows.length };
   }
   if (packId === "rp-growth") {
-    const headers = ["User ID", "Email", "Created at"];
+    const headers = ["Client", "Email", "User ID", "Joined"];
     const users = await prisma.user.findMany({
       where: { createdAt: { gte: from, lte: to } },
       orderBy: { createdAt: "asc" },
       take: 5000,
-      select: { id: true, email: true, createdAt: true },
+      select: { id: true, firstName: true, surname: true, email: true, createdAt: true },
     });
-    const rows = users.map((u) => [u.id, u.email ?? "", iso(u.createdAt)]);
+    const rows = users.map((u) => {
+      const { name, email } = customerLabel(u);
+      return [name, email, u.id, formatReportDate(u.createdAt)];
+    });
     return { headers, rows, rowCount: rows.length };
   }
   if (packId === "rp-fum") {
-    const headers = ["Placement ID", "User ID", "Kind", "Principal (₦)", "Status"];
+    const headers = [
+      "Client",
+      "Email",
+      "Placement ID",
+      "Kind",
+      "Plan",
+      "Principal (₦)",
+      "Value at maturity (₦)",
+      "Status",
+    ];
     const placements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
       take: 5000,
+      include: { user: { select: { firstName: true, surname: true, email: true } } },
     });
-    const rows = placements.map((p) => [
-      p.id,
-      p.userId,
-      p.kind,
-      koboToNaira(p.principalKobo).toFixed(2),
-      p.status,
-    ]);
+    const rows = placements.map((p) => {
+      const { name, email } = customerLabel(p.user);
+      const plan =
+        p.kind === "FIXED" ? displayPlanName(p.planType ?? "LOCK", p.tenorDays) : p.name;
+      const expected =
+        p.tenorDays != null
+          ? interestBreakdownFromNetRate(p.principalKobo, p.rateBps, p.tenorDays)
+          : null;
+      const valueAtMaturity =
+        p.interestPayout === "UPFRONT"
+          ? p.principalKobo
+          : expected
+            ? p.principalKobo + expected.netKobo
+            : p.principalKobo;
+      return [
+        name,
+        email,
+        p.id,
+        p.kind,
+        plan,
+        koboToNaira(p.principalKobo).toFixed(2),
+        koboToNaira(valueAtMaturity).toFixed(2),
+        p.status,
+      ];
+    });
     return { headers, rows, rowCount: rows.length };
   }
   return { headers: ["Note"], rows: [["No export rows for this pack"]], rowCount: 0 };

@@ -90,7 +90,10 @@ export async function runMaturityEngine() {
       },
     });
 
-    return { matured: processed, errors, callCredits };
+    const { runFlexBreakCredits } = await import("./flex-break.js");
+    const flexBreaks = await runFlexBreakCredits();
+
+    return { matured: processed, errors, callCredits, flexBreaks };
   } catch (err) {
     await prisma.jobRun.update({
       where: { id: run.id },

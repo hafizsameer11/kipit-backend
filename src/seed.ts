@@ -1,34 +1,19 @@
 import { prisma } from "./lib/prisma.js";
 import { hashSecret } from "./lib/crypto.js";
-import { nairaToKobo } from "./lib/crypto.js";
 import { ensureUserCall, ensureUserWallet } from "./services/money.js";
 
 async function main() {
   console.log("Seeding Kipit…");
 
-  const bands = [
-    { code: "CALL", label: "Kipit Call Account", minDays: 0, maxDays: 0, rateBps: 145_000 },
-    { code: "1-90", label: "Kipit Starter", minDays: 1, maxDays: 90, rateBps: 160_000 },
-    { code: "91-120", label: "Kipit Fixed Income", minDays: 91, maxDays: 120, rateBps: 175_000 },
-    { code: "121-180", label: "Kipit Target Savings", minDays: 121, maxDays: 180, rateBps: 192_000 },
-    { code: "181-364", label: "Kipit Growth", minDays: 181, maxDays: 364, rateBps: 205_000 },
-    { code: "365+", label: "Kipit Vault", minDays: 365, maxDays: null, rateBps: 215_000 },
-  ];
+  const { ensureLockFlexRateBands } = await import("./services/lock-flex-rates.js");
+  await ensureLockFlexRateBands();
 
-  for (const b of bands) {
-    await prisma.rateBand.upsert({
-      where: { code: b.code },
-      create: b,
-      update: { rateBps: b.rateBps, label: b.label, minDays: b.minDays, maxDays: b.maxDays },
-    });
-  }
-
+  // B17: four Explore categories only. Soft-retire old slugs by renaming + emptying products.
   const categories = [
     { slug: "treasury-bills", name: "Treasury Bills", sortOrder: 1 },
     { slug: "commercial-papers", name: "Commercial Papers", sortOrder: 2 },
-    { slug: "structured-notes", name: "Private & Structured Notes", sortOrder: 3 },
-    { slug: "managed-portfolio", name: "Managed Portfolio", sortOrder: 4 },
-    { slug: "commodities", name: "Commodities", sortOrder: 5 },
+    { slug: "mutual-funds", name: "Mutual Funds", sortOrder: 3 },
+    { slug: "bonds", name: "Bonds", sortOrder: 4 },
   ];
 
   for (const c of categories) {
@@ -39,63 +24,36 @@ async function main() {
     });
   }
 
-  const tb = await prisma.productCategory.findUniqueOrThrow({ where: { slug: "treasury-bills" } });
-  const cp = await prisma.productCategory.findUniqueOrThrow({ where: { slug: "commercial-papers" } });
-  const notes = await prisma.productCategory.findUniqueOrThrow({
-    where: { slug: "structured-notes" },
-  });
+  // Remove / close legacy categories and wipe test offerings (B17).
+  for (const slug of ["structured-notes", "managed-portfolio", "commodities", "fixed-income"]) {
+    const cat = await prisma.productCategory.findUnique({ where: { slug } });
+    if (cat) {
+      await prisma.product.updateMany({
+        where: { categoryId: cat.id },
+        data: { availability: "CLOSED" },
+      });
+    }
+  }
+  await prisma.product.updateMany({ data: { availability: "CLOSED" } });
 
-  const products = [
-    {
-      slug: "ngn-364-tbill",
-      categoryId: tb.id,
-      name: "364-Day T-Bill",
-      blurb: "Federal Government treasury bill.",
-      description: "Discount instrument held to maturity.",
-      rateBps: 188_000,
-      tenorDays: 364,
-      minimumKobo: nairaToKobo(100_000),
-      issuer: "DMO / CBN",
-      availability: "OPEN" as const,
-    },
-    {
-      slug: "prime-cp-90",
-      categoryId: cp.id,
-      name: "Prime CP 90",
-      blurb: "Short-tenor commercial paper.",
-      description: "Investment-grade issuer CP.",
-      rateBps: 195_000,
-      tenorDays: 90,
-      minimumKobo: nairaToKobo(250_000),
-      issuer: "Prime Issuer Plc",
-      availability: "OPEN" as const,
-    },
-    {
-      slug: "private-note-5m",
-      categoryId: notes.id,
-      name: "Private Note (Large Ticket)",
-      blurb: "Adviser-fulfilled structured note.",
-      description: "Minimum ₦5m — request access.",
-      rateBps: 210_000,
-      tenorDays: 180,
-      minimumKobo: nairaToKobo(5_000_000),
-      issuer: "Partner Desk",
-      availability: "OPEN" as const,
-      largeTicket: true,
-    },
+  // B25 placeholders until ops uploads final PDFs.
+  const legalDefaults = [
+    { docKey: "terms", title: "Terms & Conditions", version: "2026.11" },
+    { docKey: "privacy", title: "Privacy Policy", version: "2026.11" },
+    { docKey: "risk_disclosure", title: "Risk Disclosure", version: "2026.11" },
+    { docKey: "product_terms_lock", title: "Product Terms — Kipit Lock", version: "2026.11" },
+    { docKey: "product_terms_flex", title: "Product Terms — Kipit Flex", version: "2026.11" },
   ];
-
-  for (const p of products) {
-    await prisma.product.upsert({
-      where: { slug: p.slug },
-      create: p,
-      update: {
-        name: p.name,
-        rateBps: p.rateBps,
-        minimumKobo: p.minimumKobo,
-        availability: p.availability,
-        largeTicket: "largeTicket" in p ? p.largeTicket : false,
+  for (const d of legalDefaults) {
+    await prisma.legalDocument.upsert({
+      where: { docKey_version: { docKey: d.docKey, version: d.version } },
+      create: {
+        ...d,
+        published: true,
+        publishedAt: new Date(),
+        fileUrl: null,
       },
+      update: { title: d.title, published: true, publishedAt: new Date() },
     });
   }
 

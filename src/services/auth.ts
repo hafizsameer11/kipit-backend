@@ -209,12 +209,20 @@ export async function registerUser(input: {
   });
 
   if (user.email) {
-    const { sendWelcomeEmail } = await import("./notify.js");
+    const { sendWelcomeEmail, createUserNotification } = await import("./notify.js");
     await sendWelcomeEmail({
       to: user.email,
       firstName: user.firstName,
       accountType: "PERSONAL",
     }).catch((err) => console.warn("[welcome-email]", err));
+    await createUserNotification({
+      userId: user.id,
+      title: "Welcome to Kipit",
+      body: "Your account is ready. Explore Call Account, Lock and Flex plans from the app.",
+      href: "/invest",
+      pushKind: "general",
+      skipPush: true,
+    }).catch(() => undefined);
     const { logSignupStep } = await import("./signup-funnel.js");
     await logSignupStep({
       step: "complete",

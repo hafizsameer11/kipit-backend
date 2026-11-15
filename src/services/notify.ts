@@ -12,21 +12,22 @@ export async function sendWelcomeEmail(input: {
   const tempBlock = input.tempPassword
     ? `<p style="margin:16px 0;padding:12px 14px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0"><strong>Temporary password:</strong> <code>${input.tempPassword}</code><br/><span style="color:#64748b;font-size:13px">Please sign in and change it right away.</span></p>`
     : "";
-  const subject = "Welcome to Kipit — a note from the founder";
+  // B16 — Lotanna welcome (SEC + RMB + ₦1,000 + WhatsApp + support).
+  const subject = "Welcome to Kipit";
   const text = [
-    `Hi ${name},`,
+    `Dear ${name},`,
     "",
     "Welcome to Kipit.",
     "",
-    "I'm glad you're here. Kipit is built so more Nigerians can grow wealth with clarity and care — everyday savings earning daily, and fixed plans when you want a target.",
+    "Kipit Asset Management Limited is licensed and regulated by the Securities and Exchange Commission (SEC), Nigeria. Your funds are held by Rand Merchant Bank, our independent custodian.",
     "",
-    "Your money is managed by Kipit Asset Management Limited.",
+    "You can start investing from ₦1,000 — in a Call Account that earns daily, or in Kipit Lock and Kipit Flex plans with clear rates and tenors.",
     input.tempPassword ? `Temporary password: ${input.tempPassword}` : "",
     "",
-    "If anything feels unclear, reply to this email or open Ask AI in the app — we're here.",
+    "Questions? WhatsApp +234 707 198 5171 or email support@mykipit.com.",
     "",
-    "Warmly,",
-    "The Kipit founder",
+    "Warm regards,",
+    "Lotanna",
     "Kipit Asset Management Limited",
   ]
     .filter(Boolean)
@@ -35,16 +36,47 @@ export async function sendWelcomeEmail(input: {
   const html = brandWrap(
     "Welcome to Kipit",
     `
-      <p style="margin:0 0 12px">Hi ${name},</p>
+      <p style="margin:0 0 12px">Dear ${name},</p>
       <p style="margin:0 0 12px">Welcome to Kipit.</p>
-      <p style="margin:0 0 12px">I'm glad you're here. Kipit is built so more Nigerians can grow wealth with clarity and care — everyday savings earning daily, and fixed plans when you want a target.</p>
-      <p style="margin:0 0 12px">Your money is managed by <strong>Kipit Asset Management Limited</strong>.</p>
+      <p style="margin:0 0 12px"><strong>Kipit Asset Management Limited</strong> is licensed and regulated by the Securities and Exchange Commission (SEC), Nigeria. Your funds are held by <strong>Rand Merchant Bank</strong>, our independent custodian.</p>
+      <p style="margin:0 0 12px">You can start investing from <strong>₦1,000</strong> — in a Call Account that earns daily, or in Kipit Lock and Kipit Flex plans with clear rates and tenors.</p>
       ${tempBlock}
-      <p style="margin:0 0 12px">If anything feels unclear, reply to this email or open Ask AI in the app — we're here.</p>
-      <p style="margin:16px 0 0">Warmly,<br/><strong>The Kipit founder</strong></p>
+      <p style="margin:0 0 12px">Questions? WhatsApp <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or email <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+      <p style="margin:16px 0 0">Warm regards,<br/><strong>Lotanna</strong><br/>Kipit Asset Management Limited</p>
     `,
   );
 
+  return sendEmail({ to: input.to, subject, text, html });
+}
+
+/** B24 — profile update confirmation email. */
+export async function sendProfileUpdatedEmail(input: {
+  to: string;
+  firstName: string;
+  changeSummary: string;
+}) {
+  const name = input.firstName.trim() || "there";
+  const subject = "Your Kipit profile was updated";
+  const text = [
+    `Dear ${name},`,
+    "",
+    "Your Kipit profile was updated.",
+    "",
+    `Change made: ${input.changeSummary}`,
+    "",
+    "If this was not you, contact us on WhatsApp +234 707 198 5171 or support@mykipit.com.",
+    "",
+    "— Kipit",
+  ].join("\n");
+  const html = brandWrap(
+    "Profile updated",
+    `
+      <p style="margin:0 0 12px">Dear ${name},</p>
+      <p style="margin:0 0 12px">Your Kipit profile was updated.</p>
+      <p style="margin:0 0 12px"><strong>Change made:</strong> ${input.changeSummary}</p>
+      <p style="margin:0 0 12px">If this was not you, WhatsApp <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or email <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+    `,
+  );
   return sendEmail({ to: input.to, subject, text, html });
 }
 

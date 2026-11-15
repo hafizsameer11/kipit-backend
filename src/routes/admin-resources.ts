@@ -11,7 +11,8 @@ import { asyncHandler, AppError } from "../lib/errors.js";
 import { prisma } from "../lib/prisma.js";
 import { env } from "../lib/env.js";
 import { hashSecret, koboToNaira, nairaToKobo } from "../lib/crypto.js";
-import { accruedInterestToDateKobo, ensureUserCall, ensureUserWallet } from "../services/money.js";
+import { accruedInterestToDateKobo, ensureUserCall, ensureUserWallet, interestForPeriod } from "../services/money.js";
+import { serializePlacementHolding } from "../services/placement-display.js";
 import { writeAudit } from "../services/audit.js";
 import { getKycStatus } from "../services/kyc.js";
 import { createUserNotification, notifyAccountAccessChange } from "../services/notify.js";
@@ -1439,6 +1440,25 @@ adminResourcesRouter.patch(
   }),
 );
 
+function mapReconUiStatus(
+  r: StoredReconRecord,
+  providerAmount: number,
+  ledgerAmount: number,
+): "matched" | "unmatched" | "variance" | "investigating" | "resolved" {
+  if (r.status === "investigating") return "investigating";
+  if (r.status === "resolved") return "resolved";
+  if (r.exception === "variance") return "variance";
+  if (r.exception === "unmatched") return "unmatched";
+  if (
+    Math.abs(providerAmount - ledgerAmount) > 0.009 &&
+    providerAmount > 0 &&
+    ledgerAmount > 0
+  ) {
+    return "variance";
+  }
+  return "unmatched";
+}
+
 adminResourcesRouter.get(
   "/recon",
   requireAdmin,
@@ -1451,36 +1471,94 @@ adminResourcesRouter.get(
       console.warn("[recon] scan failed", err);
     }
 
+    const since = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000);
     const records = await getConfigJson<StoredReconRecord[]>("admin.recon.records", []);
-    res.json({
-      data: records.map((r) => {
-        const providerAmount = r.providerAmount ?? (r.status === "open" ? Math.abs(r.variance) : 0);
-        const ledgerAmount = r.ledgerAmount ?? 0;
-        const uiStatus =
-          r.status === "investigating" || r.status === "resolved"
-            ? r.status
-            : r.exception === "variance" ||
-                (Math.abs(providerAmount - ledgerAmount) > 0.009 &&
-                  providerAmount > 0 &&
-                  ledgerAmount > 0)
-              ? "variance"
-              : "unmatched";
-        return {
-          id: r.id,
-          providerRef: r.reference,
-          internalRef: r.internalRef ?? r.id,
-          source: r.source,
-          customer: r.customerName,
-          providerAmount,
-          ledgerAmount,
-          date: r.createdAt.slice(0, 10),
-          status: uiStatus,
-          channel: r.channel ?? r.source,
-          note: r.notes.at(-1)?.body,
-          owner: undefined,
-          timeline: r.notes.map((n) => ({ label: n.body, at: n.at, by: n.author })),
-        };
+    const lastRun = await getConfigJson<{ at?: string }>("admin.recon.lastRunAt", {});
+
+    const mapped = records.map((r) => {
+      const providerAmount =
+        r.providerAmount ??
+        (r.status === "open" && r.ledgerAmount == null ? Math.abs(r.variance) : r.providerAmount ?? 0);
+      const ledgerAmount = r.ledgerAmount ?? 0;
+      const uiStatus = mapReconUiStatus(r, providerAmount, ledgerAmount);
+      return {
+        id: r.id,
+        providerRef: r.reference,
+        internalRef: r.internalRef ?? r.id,
+        source: r.source,
+        customer: r.customerName,
+        providerAmount,
+        ledgerAmount,
+        date: r.createdAt.slice(0, 10),
+        status: uiStatus,
+        channel: r.channel ?? r.source,
+        note: r.notes.at(-1)?.body,
+        owner: undefined,
+        timeline: r.notes.map((n) => ({ label: n.body, at: n.at, by: n.author })),
+      };
+    });
+
+    const unmatched = mapped.filter((r) => r.status === "unmatched").length;
+    const variance = mapped.filter((r) => r.status === "variance").length;
+    const investigating = mapped.filter((r) => r.status === "investigating").length;
+    const resolved = mapped.filter((r) => r.status === "resolved").length;
+    const varianceValue = mapped.reduce(
+      (s, r) => s + (r.status === "variance" || r.status === "unmatched" ? Math.abs(r.providerAmount - r.ledgerAmount) : 0),
+      0,
+    );
+
+    const [settledPayments, settledWithdrawals] = await Promise.all([
+      prisma.paymentIntent.count({
+        where: { status: "SUCCESS", createdAt: { gte: since }, completedAt: { not: null } },
       }),
+      prisma.withdrawalRequest.count({
+        where: { status: "SUCCESSFUL", createdAt: { gte: since } },
+      }),
+    ]);
+    const exceptionRecords = unmatched + variance + investigating;
+    const matched = Math.max(0, settledPayments + settledWithdrawals - exceptionRecords);
+
+    const sources = ["Paystack", "Flutterwave", "NIBSS transfer", "Card acquirer"] as const;
+    const sourceRows = sources.map((name) => {
+      const rows = mapped.filter((r) => r.source === name);
+      const latest = rows
+        .map((r) => r.date)
+        .sort()
+        .at(-1);
+      return {
+        name,
+        records: rows.length,
+        value: rows.reduce((s, r) => s + Math.abs(r.ledgerAmount || r.providerAmount), 0),
+        lastSync: latest ?? (lastRun.at ? lastRun.at.slice(0, 10) : "—"),
+      };
+    });
+
+    res.json({
+      data: {
+        records: mapped,
+        summary: {
+          matched,
+          unmatched,
+          variance,
+          investigating,
+          resolved,
+          total: matched + exceptionRecords + resolved,
+          varianceValue,
+          settledPayments,
+          settledWithdrawals,
+        },
+        sources: sourceRows,
+        lastSyncAt: lastRun.at ?? null,
+        help: {
+          matching:
+            "Each provider settlement is matched to an internal journal by pay-{reference} for deposits and withdrawal IDs. Variance rows have both sides but amounts differ.",
+          syncFrequency:
+            "Automated wallet-recon runs daily at the configured Lagos cut-off; opening this page triggers a throttled re-scan (about once per minute).",
+          unmatched:
+            "Open unmatched rows stay on the dashboard until auto-resolved on a clean scan or an operator marks them investigating/resolved with notes.",
+          futureSources: "Rubipay and Rand Merchant Bank settlement feeds join after C1 — gateway labels above stay as-is until then.",
+        },
+      },
     });
   }),
 );
@@ -1928,46 +2006,166 @@ adminResourcesRouter.post(
   }),
 );
 
+type CustomerCommKind = "maturity" | "welcome" | "profile" | "statement";
+
+function classifyCustomerComm(title: string, auditAction?: string): CustomerCommKind | null {
+  const t = title.toLowerCase();
+  if (t.startsWith("hooray")) return "maturity";
+  if (t.includes("welcome to kipit")) return "welcome";
+  if (t.includes("profile updated")) return "profile";
+  if (t.includes("statement emailed") || auditAction === "user.statement_email") return "statement";
+  return null;
+}
+
 adminResourcesRouter.get(
   "/notifications",
   requireAdmin,
-  asyncHandler(async (_req, res) => {
-    const rows = await prisma.auditEvent.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 50,
-    });
+  asyncHandler(async (req, res) => {
+    const eventFilter = typeof req.query.event === "string" ? req.query.event : "all";
     const startOfToday = new Date();
     startOfToday.setHours(0, 0, 0, 0);
     const startOfYesterday = new Date(startOfToday);
     startOfYesterday.setDate(startOfYesterday.getDate() - 1);
 
-    res.json({
-      data: rows.map((r) => {
-        const created = r.createdAt;
-        let day: "Today" | "Yesterday" | "Earlier" = "Earlier";
-        if (created >= startOfToday) day = "Today";
-        else if (created >= startOfYesterday) day = "Yesterday";
-        const action = r.action.toLowerCase();
-        let kind = "system";
-        if (action.includes("kyc") || action.includes("compliance") || action.includes("frozen")) {
-          kind = "compliance";
-        } else if (action.includes("withdraw")) kind = "withdrawal";
-        else if (action.includes("rate")) kind = "rates";
-        else if (action.includes("support") || action.includes("ticket")) kind = "support";
-        else if (action.includes("recon")) kind = "reconciliation";
+    const dayBucket = (created: Date): "Today" | "Yesterday" | "Earlier" => {
+      if (created >= startOfToday) return "Today";
+      if (created >= startOfYesterday) return "Yesterday";
+      return "Earlier";
+    };
+
+    const customerKinds: CustomerCommKind[] = ["maturity", "welcome", "profile", "statement"];
+    const customerOnly =
+      eventFilter === "customer" || customerKinds.includes(eventFilter as CustomerCommKind);
+
+    const customerNotifFilter = {
+      OR: [
+        { title: { startsWith: "Hooray", mode: "insensitive" as const } },
+        { title: { contains: "Welcome to Kipit", mode: "insensitive" as const } },
+        { title: { contains: "Profile updated", mode: "insensitive" as const } },
+        { title: { contains: "Statement emailed", mode: "insensitive" as const } },
+      ],
+    };
+    const customerNotifs = await prisma.notification.findMany({
+      where: customerNotifFilter,
+      include: {
+        user: { select: { id: true, firstName: true, surname: true, email: true } },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 200,
+    });
+
+    const statementAudits =
+      customerOnly || eventFilter === "all" || eventFilter === "statement"
+        ? await prisma.auditEvent.findMany({
+            where: { action: "user.statement_email" },
+            orderBy: { createdAt: "desc" },
+            take: 40,
+          })
+        : [];
+
+    const customerRows = customerNotifs
+      .map((n) => {
+        const comm = classifyCustomerComm(n.title);
+        if (!comm) return null;
+        if (eventFilter !== "all" && eventFilter !== "customer" && eventFilter !== comm) return null;
+        const created = n.createdAt;
+        const client = `${n.user.firstName ?? ""} ${n.user.surname ?? ""}`.trim() || n.user.email || n.userId;
         return {
-          id: r.id,
-          kind,
-          title: r.action,
-          body: [r.entityType, r.entityId].filter(Boolean).join(" · ") || "Audit event",
+          id: `cn-${n.id}`,
+          kind: comm,
+          title: n.title,
+          body: `${client}${n.user.email ? ` · ${n.user.email}` : ""} — ${n.body}`,
           time: created.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }),
-          day,
+          day: dayBucket(created),
           unread: created >= startOfToday,
-          priority: action.includes("frozen") || action.includes("decline") ? "high" : "normal",
-          to: undefined as string | undefined,
-          createdAt: created,
+          priority: "normal" as const,
+          to: `/users/${n.user.id}` as string | undefined,
+          createdAt: created.toISOString(),
         };
-      }),
+      })
+      .filter(Boolean) as {
+      id: string;
+      kind: string;
+      title: string;
+      body: string;
+      time: string;
+      day: "Today" | "Yesterday" | "Earlier";
+      unread: boolean;
+      priority: "high" | "normal";
+      to?: string;
+      createdAt: string;
+    }[];
+
+    for (const r of statementAudits) {
+      if (eventFilter !== "all" && eventFilter !== "customer" && eventFilter !== "statement") continue;
+      const created = r.createdAt;
+      const after =
+        r.after && typeof r.after === "object" ? (r.after as Record<string, unknown>) : {};
+      const kindLabel = typeof after.kind === "string" ? after.kind : "Statement";
+      customerRows.push({
+        id: `st-${r.id}`,
+        kind: "statement",
+        title: "Statement email sent",
+        body: [kindLabel, after.from, after.to, r.entityId].filter(Boolean).join(" · "),
+        time: created.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }),
+        day: dayBucket(created),
+        unread: created >= startOfToday,
+        priority: "normal",
+        createdAt: created.toISOString(),
+        ...(r.entityId ? { to: `/users/${r.entityId}` } : {}),
+      });
+    }
+
+    if (customerOnly) {
+      customerRows.sort((a, b) => (a.createdAt < b.createdAt ? 1 : -1));
+      res.json({ data: customerRows.slice(0, 100) });
+      return;
+    }
+
+    const auditRows = await prisma.auditEvent.findMany({
+      where: {
+        action: {
+          not: "user.statement_email",
+        },
+      },
+      orderBy: { createdAt: "desc" },
+      take: 40,
+    });
+
+    const ops = auditRows.map((r) => {
+      const created = r.createdAt;
+      const action = r.action.toLowerCase();
+      let kind = "system";
+      if (action.includes("kyc") || action.includes("compliance") || action.includes("frozen")) {
+        kind = "compliance";
+      } else if (action.includes("withdraw")) kind = "withdrawal";
+      else if (action.includes("rate")) kind = "rates";
+      else if (action.includes("support") || action.includes("ticket")) kind = "support";
+      else if (action.includes("recon")) kind = "reconciliation";
+      if (eventFilter !== "all" && eventFilter !== kind) return null;
+      return {
+        id: r.id,
+        kind,
+        title: r.action,
+        body: [r.entityType, r.entityId].filter(Boolean).join(" · ") || "Audit event",
+        time: created.toLocaleTimeString("en-GB", { hour: "2-digit", minute: "2-digit", hour12: false }),
+        day: dayBucket(created),
+        unread: created >= startOfToday,
+        priority: (action.includes("frozen") || action.includes("decline") ? "high" : "normal") as
+          | "high"
+          | "normal",
+        to: undefined as string | undefined,
+        createdAt: created.toISOString(),
+      };
+    });
+
+    const opsRows = ops.filter((row): row is NonNullable<typeof row> => row != null);
+    const merged = [...customerRows, ...opsRows].sort((a, b) =>
+      a.createdAt < b.createdAt ? 1 : -1,
+    );
+
+    res.json({
+      data: merged.slice(0, 100).map(({ createdAt: _c, ...rest }) => rest),
     });
   }),
 );
@@ -2000,23 +2198,31 @@ adminResourcesRouter.get(
         status: "ACTIVE",
         maturityDate: { gte: rangeStart, lte: rangeEnd },
       },
-      include: { user: true },
+      include: { user: true, product: { include: { category: true } } },
       orderBy: { maturityDate: "asc" },
-      take: 100,
+      take: 200,
     });
     res.json({
       data: rows.map((p) => {
         const maturity = p.maturityDate ?? now;
         const window = maturity <= in7 ? "week" : "month";
-        const interest =
-          (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 1000000n;
-        const expected = p.principalKobo + interest;
+        const whtRatePct = p.product?.whtRatePct ?? 10;
+        const h = serializePlacementHolding(p, whtRatePct);
+        const accruedNet = accruedInterestToDateKobo(p);
         return {
           id: p.id,
           user: `${p.user.firstName} ${p.user.surname}`,
-          product: p.name,
-          principal: koboToNaira(p.principalKobo),
-          expected: koboToNaira(expected),
+          product: h.name,
+          planType: h.planType,
+          interestPayout: h.interestPayout,
+          kind: p.kind,
+          category: p.product?.category?.name ?? null,
+          principal: h.principal,
+          expected: h.valueAtMaturity,
+          expectedNet: h.expectedNet,
+          expectedGross: h.expectedGross,
+          expectedWht: h.expectedWht,
+          accruedNet: h.accruedNet,
           date: maturity.toLocaleDateString("en-GB", {
             day: "2-digit",
             month: "short",
@@ -2024,6 +2230,7 @@ adminResourcesRouter.get(
           }),
           window,
           maturityDate: maturity.toISOString(),
+          accruedToDate: koboToNaira(accruedNet),
         };
       }),
     });
@@ -2319,14 +2526,7 @@ adminResourcesRouter.get(
         status: { in: ["ACTIVE", "MATURED"] },
         maturityDate: { gte: week0, lte: horizonEnd },
       },
-      select: {
-        principalKobo: true,
-        rateBps: true,
-        tenorDays: true,
-        maturityDate: true,
-        accruedKobo: true,
-        status: true,
-      },
+      include: { product: { select: { whtRatePct: true } } },
     });
 
     type WeekBucket = { week: string; valueKobo: bigint; start: Date; end: Date };
@@ -2342,15 +2542,15 @@ adminResourcesRouter.get(
 
     for (const p of rows) {
       if (!p.maturityDate) continue;
-      const interest =
+      const whtRatePct = p.product?.whtRatePct ?? 10;
+      const valueAtMaturityKobo =
         p.status === "MATURED" && p.accruedKobo > 0n
-          ? p.accruedKobo
-          : (p.principalKobo * BigInt(p.rateBps) * BigInt(p.tenorDays ?? 0)) / 365n / 1000000n;
-      const expected = p.principalKobo + interest;
+          ? p.principalKobo + p.accruedKobo
+          : serializePlacementHolding(p, whtRatePct).valueAtMaturityKobo;
       const bucket = buckets.find(
         (b) => p.maturityDate! >= b.start && p.maturityDate! <= b.end,
       );
-      if (bucket) bucket.valueKobo += expected;
+      if (bucket) bucket.valueKobo += valueAtMaturityKobo;
     }
 
     const mapped = buckets.map((b) => ({
@@ -2432,6 +2632,115 @@ adminResourcesRouter.get(
         .map(([product, value]) => ({ product, value: koboToNaira(value) }))
         .sort((a, b) => b.value - a.value)
         .slice(0, 8),
+    });
+  }),
+);
+
+/** B25 — list / publish legal documents. */
+adminResourcesRouter.get(
+  "/legal-documents",
+  requireAdmin,
+  asyncHandler(async (_req, res) => {
+    const rows = await prisma.legalDocument.findMany({
+      orderBy: [{ docKey: "asc" }, { createdAt: "desc" }],
+    });
+    res.json({
+      data: rows.map((d) => ({
+        id: d.id,
+        docKey: d.docKey,
+        title: d.title,
+        version: d.version,
+        fileUrl: d.fileUrl,
+        published: d.published,
+        publishedAt: d.publishedAt,
+        createdAt: d.createdAt,
+      })),
+    });
+  }),
+);
+
+adminResourcesRouter.post(
+  "/legal-documents",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        docKey: z.enum([
+          "terms",
+          "privacy",
+          "risk_disclosure",
+          "product_terms_lock",
+          "product_terms_flex",
+        ]),
+        title: z.string().min(1),
+        version: z.string().min(1),
+        fileUrl: z.string().url().optional().nullable(),
+        publish: z.boolean().optional(),
+      })
+      .parse(req.body);
+    const published = Boolean(body.publish);
+    const row = await prisma.legalDocument.create({
+      data: {
+        docKey: body.docKey,
+        title: body.title,
+        version: body.version,
+        fileUrl: body.fileUrl ?? null,
+        published,
+        publishedAt: published ? new Date() : null,
+      },
+    });
+    res.status(201).json({
+      data: {
+        id: row.id,
+        docKey: row.docKey,
+        title: row.title,
+        version: row.version,
+        fileUrl: row.fileUrl,
+        published: row.published,
+        publishedAt: row.publishedAt,
+      },
+    });
+  }),
+);
+
+adminResourcesRouter.patch(
+  "/legal-documents/:id",
+  requireAdmin,
+  asyncHandler(async (req, res) => {
+    const body = z
+      .object({
+        title: z.string().min(1).optional(),
+        fileUrl: z.string().url().optional().nullable(),
+        publish: z.boolean().optional(),
+      })
+      .parse(req.body);
+    const existing = await prisma.legalDocument.findUnique({
+      where: { id: String(req.params.id) },
+    });
+    if (!existing) throw new AppError(404, "Document not found", "NOT_FOUND");
+    const published =
+      body.publish === undefined ? existing.published : body.publish;
+    const row = await prisma.legalDocument.update({
+      where: { id: existing.id },
+      data: {
+        ...(body.title !== undefined ? { title: body.title } : {}),
+        ...(body.fileUrl !== undefined ? { fileUrl: body.fileUrl } : {}),
+        published,
+        publishedAt: published
+          ? existing.publishedAt ?? new Date()
+          : existing.publishedAt,
+      },
+    });
+    res.json({
+      data: {
+        id: row.id,
+        docKey: row.docKey,
+        title: row.title,
+        version: row.version,
+        fileUrl: row.fileUrl,
+        published: row.published,
+        publishedAt: row.publishedAt,
+      },
     });
   }),
 );

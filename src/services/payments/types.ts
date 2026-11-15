@@ -40,7 +40,8 @@ export type TransferCreditEvent = {
   sessionId?: string;
 };
 
-export const CARD_FEE_BPS = 150; // 1.5%
+/** B7 — no card funding fee until Rubipay (C1). */
+export const CARD_FEE_BPS = 0;
 
 export function cardFeeKobo(amountKobo: bigint) {
   return (amountKobo * BigInt(CARD_FEE_BPS)) / 10000n;

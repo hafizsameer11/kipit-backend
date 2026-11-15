@@ -48,6 +48,9 @@ Rules:
 - Be concise, warm, and clear. Use ₦ for amounts.
 - Plain text only. Never use Markdown — no **bold**, *italic*, # headings, bullet lists with *, or code fences. The app shows your words as plain chat bubbles, so asterisks look broken.
 - NEVER move money, change PIN, approve withdrawals, or invent balances/rates/transaction sources.
+- NEVER recommend a specific investment, offering, Lock/Flex tenor, Explore product, or rate band. Do not say \"you should\", \"I recommend\", \"best for you\", or pick a winner. Explain how Kipit Lock, Kipit Flex, Call Account, and Explore offerings work in general; let the user choose. If asked \"what should I buy\", \"help me invest\", or \"which plan\", explain the types and hand off to /invest or /explore without naming a preferred option.
+- When listing open offerings via tools, present them as a browse list only and say this is not a recommendation.
+- Say \"offerings\" not \"products\" when referring to Explore.
 - Only use numbers and facts returned by tools. If a tool fails, say you could not load live data.
 - When the user asks where money came from, why they received a credit, interest/earnings, or what a ₦ amount was — ALWAYS call list_recent_activity first (optionally with amountNaira). Answer from matching rows only. Do not invent a fixed-plan story if activity shows Call Account interest or a Call→Wallet move.
 - Labels: INTEREST + Call Account = daily Call interest. CALL_WITHDRAW = user moved money from Call Account into Kipit Wallet (not new interest). CALL_DEPOSIT = wallet → Call. PLACEMENT = investment purchase.
@@ -55,7 +58,8 @@ Rules:
 - For support issues you cannot resolve with tools, help the user file a support ticket via create_support_ticket (confirm category/subject/details first), or list_support_tickets to show open cases.
 - You confirm nothing with PIN in chat — the user does that on the secure screen.
 - If the user asks something outside Kipit (general investing/KYC literacy is OK), answer briefly and steer back to Kipit when useful.
-- Prefer short answers (2–4 sentences) plus tools for cards/CTAs.`;
+- Prefer short answers (2–4 sentences) plus tools for cards/CTAs.
+- Always remember: Kipit AI provides general information only. It does not give investment advice or recommend investments.`;
 
 /** Strip Markdown markers so chat bubbles stay readable as plain text. */
 function plainChatText(input: string) {
@@ -236,7 +240,8 @@ const TOOLS = [
     type: "function" as const,
     function: {
       name: "list_products",
-      description: "List open investment products and fixed-plan rate bands the user can browse.",
+      description:
+        "List open Explore offerings and fixed-plan rate bands for browsing only. Never use this list to recommend a specific investment — present neutrally and let the user choose.",
       parameters: { type: "object", properties: {}, additionalProperties: false },
     },
   },
@@ -457,11 +462,18 @@ async function runTool(
         rate: `${p.rateBps / 10000}% p.a.`,
         tenor: `${p.tenorDays} days`,
         minimum: koboToNaira(p.minimumKobo),
-        to: `/explore/${p.id}/subscribe`,
+        to: `/explore/${p.id}`,
       })),
     ];
-    blocks.push({ kind: "products", products: list });
-    return { products: list };
+    blocks.push({
+      kind: "products",
+      intro: "Browse only — not a recommendation. Compare rate, tenor and minimum, then choose yourself.",
+      products: list,
+    });
+    return {
+      note: "Not investment advice. Do not recommend any item from this list.",
+      offerings: list,
+    };
   }
 
   if (name === "get_kyc_status") {
@@ -647,7 +659,7 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
       return {
         mode: "rules",
         text: "You have no upcoming maturities yet.",
-        blocks: [{ kind: "handoff", label: "Explore products", to: "/explore" }],
+        blocks: [{ kind: "handoff", label: "Explore offerings", to: "/explore" }],
       };
     }
     return {
@@ -689,39 +701,33 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
     };
   }
 
-  if (/(invest|plan|product|rate)/.test(text)) {
-    const products = await prisma.product.findMany({
-      where: { availability: "OPEN" },
-      take: 3,
-    });
-    const bands = await prisma.rateBand.findMany({ orderBy: { minDays: "asc" }, take: 3 });
+  if (/(help me invest|what should i|recommend|which (plan|offering|product)|best (plan|for))/i.test(text)) {
     return {
       mode: "rules",
-      text: "Here are options that fit. Rate, tenor and minimum are shown together. Money moves only after you continue securely.",
+      text: "I don't recommend specific investments. Kipit Lock is fixed until maturity, Kipit Flex can be broken after 30 days with a partial interest forfeit, Call Account earns daily with withdrawals anytime, and Explore lists partner offerings. Browse Invest or Explore and choose yourself.",
       blocks: [
-        {
-          kind: "products",
-          products: [
-            ...bands
-              .filter((b) => b.code !== "CALL")
-              .slice(0, 2)
-              .map((b) => ({
-                name: b.label,
-                rate: `${b.rateBps / 10000}% p.a.`,
-                tenor: b.maxDays ? `${b.minDays}-${b.maxDays} days` : `${b.minDays}+ days`,
-                minimum: 10000,
-                to: "/fixed-plans/create",
-              })),
-            ...products.map((p) => ({
-              name: p.name,
-              rate: `${p.rateBps / 10000}% p.a.`,
-              tenor: `${p.tenorDays} days`,
-              minimum: koboToNaira(p.minimumKobo),
-              to: `/explore/${p.id}/subscribe`,
-            })),
-          ],
-        },
-        { kind: "handoff", label: "Continue Securely", to: "/invest" },
+        { kind: "handoff", label: "Open Invest", to: "/invest" },
+        { kind: "handoff", label: "Browse offerings", to: "/explore" },
+        { kind: "chips", options: ["How do fixed plans work?", "What's my balance?", "I need support"] },
+      ],
+    };
+  }
+
+  if (/(how do fixed|fixed plan|kipit lock|kipit flex|call account)/.test(text)) {
+    return {
+      mode: "rules",
+      text: "Kipit Lock locks funds for a chosen tenor at a fixed rate. Kipit Flex also has a fixed rate but you can break after 30 days (losing 50% of accrued interest). Call Account earns daily interest with withdrawals anytime. This is general information only — not a recommendation.",
+      blocks: [{ kind: "handoff", label: "Open Invest", to: "/invest" }],
+    };
+  }
+
+  if (/(invest|plan|product|offering|rate)/.test(text)) {
+    return {
+      mode: "rules",
+      text: "You can browse Kipit Lock, Kipit Flex, Call Account and Explore offerings yourself. I never pick one for you. Rate, tenor and minimum are shown on each screen. Money moves only after you continue securely.",
+      blocks: [
+        { kind: "handoff", label: "Open Invest", to: "/invest" },
+        { kind: "handoff", label: "Browse offerings", to: "/explore" },
       ],
     };
   }
@@ -748,9 +754,9 @@ export async function buildRuleBasedReply(userId: string, raw: string): Promise<
 
   return {
     mode: "rules",
-    text: "I can help with your Kipit account, investments, transactions, support tickets and available products. I never move money in chat — you confirm with your PIN on the secure screen.",
+    text: "I can help with your Kipit account, investments, transactions, support tickets and available offerings. I never recommend specific investments, and I never move money in chat — you confirm with your PIN on the secure screen.",
     blocks: [
-      { kind: "chips", options: ["What's my balance?", "Help me invest", "I need support"] },
+      { kind: "chips", options: ["What's my balance?", "How do fixed plans work?", "I need support"] },
     ],
   };
 }
