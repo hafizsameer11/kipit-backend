@@ -7,7 +7,10 @@ import { publicUser } from "../services/auth.js";
 import { ensureUserCall, ensureUserWallet } from "../services/money.js";
 import { koboToNaira } from "../lib/crypto.js";
 import { recordFeedImpressions } from "../services/feed-impressions.js";
-import { portfolioInterestThisWeek } from "../lib/call-interest-week.js";
+import {
+  portfolioInterestThisMonth,
+  portfolioInterestThisWeek,
+} from "../lib/call-interest-week.js";
 import { accruedInterestToDateKobo, placementInterestKobo } from "../services/money.js";
 import { displayPlanName } from "../services/lock-flex-rates.js";
 import { formatRatePair, interestBreakdownFromNetAmount } from "../services/wht.js";
@@ -54,7 +57,10 @@ meRouter.get(
       feed.map((card) => card.id),
     ).catch(() => undefined);
 
-    const interestWeek = await portfolioInterestThisWeek(user.id);
+    const [interestWeek, interestMonth] = await Promise.all([
+      portfolioInterestThisWeek(user.id),
+      portfolioInterestThisMonth(user.id),
+    ]);
 
     const holdingView = (p: (typeof placements)[number]) => {
       const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
@@ -131,6 +137,8 @@ meRouter.get(
         callInterestToday: interestWeek.callInterestToday,
         interestWeekSeries: interestWeek.interestWeekSeries,
         interestWeekLabels: interestWeek.interestWeekLabels,
+        // B2 — calendar month-to-date (Lagos), same sources as the week figure.
+        interestThisMonth: interestMonth.interestThisMonth,
         nextMaturity: next?.maturityDate
           ? (() => {
               const h = holdingView(next);

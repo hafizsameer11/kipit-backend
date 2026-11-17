@@ -32,19 +32,20 @@ function addKobo(map: Map<string, bigint>, key: string, amount: bigint) {
   map.set(key, (map.get(key) ?? 0n) + amount);
 }
 
+function lagosMonthStartKey(now: Date): string {
+  return `${lagosYmd(now).slice(0, 8)}01`;
+}
+
 /**
- * Overall interest for the rolling last 7 Lagos days (oldest → today):
+ * Overall interest for Lagos calendar days [startKey, endKey] inclusive:
  *  - Call Account daily interest
  *  - Fixed/Explore maturity interest (accrued on matured placements)
- *  - Any other INTEREST credits to wallet/call (legacy), excluding duplicates of the above
+ *  - Other INTEREST credits to wallet/call (legacy), excluding duplicates
  */
-export async function portfolioInterestThisWeek(userId: string) {
+async function portfolioInterestForRange(userId: string, startKey: string, endKey: string) {
   const now = new Date();
-  const todayKey = lagosYmd(now);
-  const startKey = addYmd(todayKey, -6);
-
-  const since = new Date(now);
-  since.setDate(since.getDate() - 12);
+  // Pull a few days before the window so maturity dating stays accurate.
+  const since = ymdToDateUtcNoon(addYmd(startKey, -5));
 
   const wallet = await ensureUserWallet(userId);
   const call = await ensureUserCall(userId);
@@ -52,7 +53,6 @@ export async function portfolioInterestThisWeek(userId: string) {
   const byDay = new Map<string, bigint>();
   const callByDay = new Map<string, bigint>();
 
-  // 1) Call daily interest (+ any other INTEREST on Call).
   const callInterest = await prisma.journalLine.findMany({
     where: {
       accountId: call.id,
@@ -66,11 +66,11 @@ export async function portfolioInterestThisWeek(userId: string) {
     const desc = String(line.entry.description || "");
     if (/maturity/i.test(desc)) continue;
     const key = lagosYmd(line.createdAt);
+    if (key < startKey || key > endKey) continue;
     addKobo(byDay, key, line.amountKobo);
     addKobo(callByDay, key, line.amountKobo);
   }
 
-  // 2) Maturity interest from placements settled in-window (covers new 3-line MATURITY journals).
   const matured = await prisma.placement.findMany({
     where: {
       userId,
@@ -83,12 +83,10 @@ export async function portfolioInterestThisWeek(userId: string) {
   for (const p of matured) {
     const when = p.maturityDate ?? p.updatedAt;
     const key = lagosYmd(when);
-    if (key < startKey || key > todayKey) continue;
+    if (key < startKey || key > endKey) continue;
     addKobo(byDay, key, p.accruedKobo);
   }
 
-  // 3) Legacy wallet INTEREST credits (e.g. old "maturity interest funding") not already
-  //    represented by placement accrued above for that day — only add if no matured interest that day.
   const walletInterest = await prisma.journalLine.findMany({
     where: {
       accountId: wallet.id,
@@ -99,31 +97,57 @@ export async function portfolioInterestThisWeek(userId: string) {
     select: { amountKobo: true, createdAt: true, entry: { select: { description: true } } },
   });
   const maturedDays = new Set(
-    matured.map((p) => lagosYmd(p.maturityDate ?? p.updatedAt)).filter((k) => k >= startKey && k <= todayKey),
+    matured
+      .map((p) => lagosYmd(p.maturityDate ?? p.updatedAt))
+      .filter((k) => k >= startKey && k <= endKey),
   );
   for (const line of walletInterest) {
     const key = lagosYmd(line.createdAt);
-    if (key < startKey || key > todayKey) continue;
-    // Prefer placement accrued when we matured that day; skip legacy duplicate INTEREST.
+    if (key < startKey || key > endKey) continue;
     if (maturedDays.has(key) && /maturity/i.test(String(line.entry.description || ""))) continue;
     if (!maturedDays.has(key)) {
       addKobo(byDay, key, line.amountKobo);
     }
   }
 
+  let total = 0n;
+  for (const [key, kobo] of byDay) {
+    if (key >= startKey && key <= endKey) total += kobo;
+  }
+
+  const todayKey = lagosYmd(now);
+  return {
+    totalKobo: total,
+    byDay,
+    callByDay,
+    todayKey,
+    startKey,
+    endKey,
+  };
+}
+
+/**
+ * Rolling last 7 Lagos days (oldest → today).
+ */
+export async function portfolioInterestThisWeek(userId: string) {
+  const now = new Date();
+  const todayKey = lagosYmd(now);
+  const startKey = addYmd(todayKey, -6);
+  const range = await portfolioInterestForRange(userId, startKey, todayKey);
+
   const series: number[] = [];
   const labels: string[] = [];
   let weekTotal = 0n;
   for (let i = 0; i < 7; i++) {
     const key = addYmd(startKey, i);
-    const kobo = byDay.get(key) ?? 0n;
+    const kobo = range.byDay.get(key) ?? 0n;
     weekTotal += kobo;
     series.push(koboToNaira(kobo));
     labels.push(lagosWeekdayShort(ymdToDateUtcNoon(key)).slice(0, 1));
   }
 
-  const todayKobo = byDay.get(todayKey) ?? 0n;
-  const callTodayKobo = callByDay.get(todayKey) ?? 0n;
+  const todayKobo = range.byDay.get(todayKey) ?? 0n;
+  const callTodayKobo = range.callByDay.get(todayKey) ?? 0n;
 
   return {
     interestThisWeek: koboToNaira(weekTotal),
@@ -134,6 +158,19 @@ export async function portfolioInterestThisWeek(userId: string) {
     interestWeekLabels: labels,
     weekStart: startKey,
     weekEnd: todayKey,
+  };
+}
+
+/** Calendar month to date (Lagos) — same interest sources as the week figure. */
+export async function portfolioInterestThisMonth(userId: string) {
+  const now = new Date();
+  const todayKey = lagosYmd(now);
+  const startKey = lagosMonthStartKey(now);
+  const range = await portfolioInterestForRange(userId, startKey, todayKey);
+  return {
+    interestThisMonth: koboToNaira(range.totalKobo),
+    monthStart: startKey,
+    monthEnd: todayKey,
   };
 }
 
