@@ -90,3 +90,11 @@ export function serializePlacementHolding(p: PlacementDisplayInput, whtRatePct =
     breakRequestedAt: p.breakRequestedAt?.toISOString() ?? null,
   };
 }
+
+/** Drop BigInt fields so Express `res.json` never throws (holding detail 500). */
+export function toClientHolding<T extends { principalKobo?: bigint; valueAtMaturityKobo?: bigint }>(
+  h: T,
+) {
+  const { principalKobo: _p, valueAtMaturityKobo: _v, ...rest } = h;
+  return rest;
+}

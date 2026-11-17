@@ -12,7 +12,10 @@ import {
   ensureUserWallet,
   getWalletBalanceKobo,
 } from "../services/money.js";
-import { serializePlacementHolding } from "../services/placement-display.js";
+import {
+  serializePlacementHolding,
+  toClientHolding,
+} from "../services/placement-display.js";
 
 const serializeHolding = serializePlacementHolding;
 
@@ -60,7 +63,7 @@ portfolioRouter.get(
           fixed: koboToNaira(fixedTotal),
           explore: koboToNaira(exploreTotal),
         },
-        holdings: placements.map((p) => serializeHolding(p)),
+        holdings: placements.map((p) => toClientHolding(serializeHolding(p))),
       },
     });
   }),
@@ -85,7 +88,7 @@ portfolioRouter.get(
       }));
     res.json({
       data: {
-        ...serializeHolding(p),
+        ...toClientHolding(serializeHolding(p)),
         // Additive — empty when no product docs; clients keep local fallbacks.
         documents,
         product: p.product
