@@ -312,7 +312,12 @@ export async function maturePlacement(input: {
     select: { firstName: true },
   });
   const firstName = user?.firstName?.trim() || "there";
-  const whtLines = `Principal ₦${koboToNaira(placement.principalKobo).toLocaleString("en-NG")} · Gross interest ₦${koboToNaira(bd.grossKobo).toLocaleString("en-NG")} · Less WHT (10%) ₦${koboToNaira(bd.whtKobo).toLocaleString("en-NG")} · Net interest ₦${koboToNaira(bd.netKobo).toLocaleString("en-NG")} · Total paid ₦${payoutNaira.toLocaleString("en-NG")}`;
+
+  const { sendMaturityEmail } = await import("./notify.js");
+  const notifyUser = await prisma.user.findUnique({
+    where: { id: placement.userId },
+    include: { notificationPrefs: true },
+  });
 
   if (rolledOver) {
     const ratePct = (rolledOver.rateBps / 10000).toFixed(2);
@@ -323,10 +328,23 @@ export async function maturePlacement(input: {
       body: `Your ${tenorDays}-day plan has matured. ₦${payoutNaira.toLocaleString("en-NG")} (principal + interest) has been rolled over into a new ${tenorDays}-day plan at ${ratePct}% p.a., maturing on ${matures}.`,
       href: "/portfolio",
       pushKind: "maturity",
-      emailKind: "investment",
-      amountNaira: payoutNaira,
-      emailDetail: `Hooray! Your Kipit investment has matured · ${planLabel} · ${whtLines} · Rolled over at ${ratePct}% p.a. · matures ${matures}`,
     }).catch(() => undefined);
+    if (notifyUser?.email && notifyUser.notificationPrefs?.emailInvestments !== false) {
+      await sendMaturityEmail({
+        to: notifyUser.email,
+        firstName,
+        planLabel,
+        tenorDays,
+        principalNaira: koboToNaira(placement.principalKobo),
+        grossInterestNaira: koboToNaira(bd.grossKobo),
+        whtNaira: koboToNaira(bd.whtKobo),
+        netInterestNaira: koboToNaira(bd.netKobo),
+        totalPaidNaira: payoutNaira,
+        outcome: "rollover",
+        rolloverRatePct: ratePct,
+        rolloverMaturityDate: matures,
+      }).catch(() => undefined);
+    }
   } else {
     const destBalance = toCall
       ? await ensureUserCall(placement.userId)
@@ -339,10 +357,22 @@ export async function maturePlacement(input: {
       body: `Your ${tenorDays}-day plan has matured. ₦${payoutNaira.toLocaleString("en-NG")} (principal + interest) has been paid into your ${destLabel}. Your ${destLabel} balance is now ₦${balNaira.toLocaleString("en-NG")}.`,
       href: "/portfolio",
       pushKind: "maturity",
-      emailKind: "investment",
-      amountNaira: payoutNaira,
-      emailDetail: `Hooray! Your Kipit investment has matured · ${planLabel} · ${whtLines} · Paid to ${destLabel} · Balance ₦${balNaira.toLocaleString("en-NG")} · WhatsApp +234 707 198 5171 · support@mykipit.com`,
     }).catch(() => undefined);
+    if (notifyUser?.email && notifyUser.notificationPrefs?.emailInvestments !== false) {
+      await sendMaturityEmail({
+        to: notifyUser.email,
+        firstName,
+        planLabel,
+        tenorDays,
+        principalNaira: koboToNaira(placement.principalKobo),
+        grossInterestNaira: koboToNaira(bd.grossKobo),
+        whtNaira: koboToNaira(bd.whtKobo),
+        netInterestNaira: koboToNaira(bd.netKobo),
+        totalPaidNaira: payoutNaira,
+        outcome: toCall ? "call" : "wallet",
+        balanceNaira: balNaira,
+      }).catch(() => undefined);
+    }
   }
 
   return {

@@ -49,13 +49,16 @@ export async function sendWelcomeEmail(input: {
   return sendEmail({ to: input.to, subject, text, html });
 }
 
-/** B24 — profile update confirmation email. */
+/** B24 — profile update confirmation email (includes activity date/time). */
 export async function sendProfileUpdatedEmail(input: {
   to: string;
   firstName: string;
   changeSummary: string;
+  /** ISO or display string; defaults to now (Lagos-friendly en-NG). */
+  activityAt?: string | Date;
 }) {
   const name = input.firstName.trim() || "there";
+  const when = formatActivityAt(input.activityAt ?? new Date());
   const subject = "Your Kipit profile was updated";
   const text = [
     `Dear ${name},`,
@@ -63,18 +66,109 @@ export async function sendProfileUpdatedEmail(input: {
     "Your Kipit profile was updated.",
     "",
     `Change made: ${input.changeSummary}`,
+    `Date and time: ${when}`,
     "",
     "If this was not you, contact us on WhatsApp +234 707 198 5171 or support@mykipit.com.",
     "",
-    "— Kipit",
+    "— Kipit Asset Management Limited",
   ].join("\n");
   const html = brandWrap(
-    "Profile updated",
+    "Your Kipit profile was updated",
     `
       <p style="margin:0 0 12px">Dear ${name},</p>
       <p style="margin:0 0 12px">Your Kipit profile was updated.</p>
-      <p style="margin:0 0 12px"><strong>Change made:</strong> ${input.changeSummary}</p>
+      <p style="margin:0 0 8px"><strong>Change made:</strong> ${escapeHtml(input.changeSummary)}</p>
+      <p style="margin:0 0 16px"><strong>Date and time:</strong> ${escapeHtml(when)}</p>
       <p style="margin:0 0 12px">If this was not you, WhatsApp <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or email <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+    `,
+  );
+  return sendEmail({ to: input.to, subject, text, html });
+}
+
+function formatActivityAt(value: string | Date) {
+  const d = value instanceof Date ? value : new Date(value);
+  if (Number.isNaN(d.getTime())) return String(value);
+  return d.toLocaleString("en-NG", {
+    timeZone: "Africa/Lagos",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
+    hour: "2-digit",
+    minute: "2-digit",
+  });
+}
+
+function escapeHtml(value: string) {
+  return value
+    .replace(/&/g, "&amp;")
+    .replace(/</g, "&lt;")
+    .replace(/>/g, "&gt;")
+    .replace(/"/g, "&quot;");
+}
+
+function nairaLine(n: number) {
+  return `₦${Math.round(n).toLocaleString("en-NG")}`;
+}
+
+/** B15 — dedicated maturity email (not the generic investment txn template). */
+export async function sendMaturityEmail(input: {
+  to: string;
+  firstName: string;
+  planLabel: string;
+  tenorDays: number;
+  principalNaira: number;
+  grossInterestNaira: number;
+  whtNaira: number;
+  netInterestNaira: number;
+  totalPaidNaira: number;
+  outcome: "wallet" | "call" | "rollover";
+  balanceNaira?: number;
+  rolloverRatePct?: string;
+  rolloverMaturityDate?: string;
+}) {
+  const name = input.firstName.trim() || "there";
+  const subject = "Hooray! Your Kipit investment has matured";
+  const outcomeLine =
+    input.outcome === "rollover"
+      ? `Your payout has been rolled over into a new ${input.tenorDays}-day plan at ${input.rolloverRatePct ?? "—"}% p.a., maturing on ${input.rolloverMaturityDate ?? "—"}.`
+      : input.outcome === "call"
+        ? `₦${input.totalPaidNaira.toLocaleString("en-NG")} (principal + net interest) has been moved to your Call Account. Your Call Account balance is now ${nairaLine(input.balanceNaira ?? 0)}.`
+        : `₦${input.totalPaidNaira.toLocaleString("en-NG")} (principal + net interest) has been paid into your wallet. Your wallet balance is now ${nairaLine(input.balanceNaira ?? 0)}.`;
+
+  const text = [
+    `Dear ${name},`,
+    "",
+    "Hooray! Your Kipit investment has matured.",
+    "",
+    `Plan: ${input.planLabel}`,
+    `Principal: ${nairaLine(input.principalNaira)}`,
+    `Gross interest: ${nairaLine(input.grossInterestNaira)}`,
+    `Less WHT (10%): ${nairaLine(input.whtNaira)}`,
+    `Net interest: ${nairaLine(input.netInterestNaira)}`,
+    `Total paid: ${nairaLine(input.totalPaidNaira)}`,
+    "",
+    outcomeLine,
+    "",
+    "Questions? WhatsApp +234 707 198 5171 or email support@mykipit.com.",
+    "",
+    "— Kipit Asset Management Limited",
+  ].join("\n");
+
+  const html = brandWrap(
+    "Hooray! Your Kipit investment has matured",
+    `
+      <p style="margin:0 0 12px">Dear ${name},</p>
+      <p style="margin:0 0 16px">Hooray! Your Kipit investment has matured.</p>
+      <p style="margin:0 0 8px"><strong>Plan:</strong> ${escapeHtml(input.planLabel)}</p>
+      <table style="width:100%;border-collapse:collapse;margin:12px 0 16px;font-size:14px">
+        <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Principal</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.principalNaira)}</td></tr>
+        <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Gross interest</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.grossInterestNaira)}</td></tr>
+        <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Less WHT (10%)</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.whtNaira)}</td></tr>
+        <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Net interest</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.netInterestNaira)}</td></tr>
+        <tr><td style="padding:10px 0;color:#0b1d3a;font-weight:800">Total paid</td><td style="padding:10px 0;text-align:right;font-weight:800;color:#b98113">${nairaLine(input.totalPaidNaira)}</td></tr>
+      </table>
+      <p style="margin:0 0 16px">${escapeHtml(outcomeLine)}</p>
+      <p style="margin:0">Questions? WhatsApp <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or email <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
     `,
   );
   return sendEmail({ to: input.to, subject, text, html });
