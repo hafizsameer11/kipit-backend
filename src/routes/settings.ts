@@ -880,6 +880,97 @@ settingsRouter.post(
 );
 
 /**
+ * Render a real Chromium/print PDF for Appendix C statements (B21/B22).
+ * Client sends the already-assembled statement payload; server prints HTML → PDF.
+ */
+settingsRouter.post(
+  "/statements/pdf",
+  requireAuth,
+  asyncHandler(async (req: AuthRequest, res) => {
+    const moneyRow = z.object({ label: z.string(), value: z.string() });
+    const body = z
+      .object({
+        title: z.string().min(3).max(120),
+        subtitle: z.string().max(240).optional(),
+        reference: z.string().max(80).optional(),
+        filename: z.string().min(3).max(120).optional(),
+        rows: z.array(moneyRow).max(40).optional(),
+        clientMeta: z.array(moneyRow).max(8).optional(),
+        portfolioSummary: z.array(moneyRow).max(12).optional(),
+        whtSection: z
+          .array(
+            z.object({
+              label: z.string(),
+              gross: z.string(),
+              wht: z.string(),
+              net: z.string(),
+            }),
+          )
+          .max(20)
+          .optional(),
+        investments: z
+          .array(
+            z.object({
+              plan: z.string(),
+              principal: z.string(),
+              rate: z.string(),
+              maturity: z.string(),
+              gross: z.string(),
+              wht: z.string(),
+              net: z.string(),
+              valueAtMaturity: z.string(),
+            }),
+          )
+          .max(80)
+          .optional(),
+        transactions: z
+          .array(
+            z.object({
+              date: z.string(),
+              description: z.string(),
+              reference: z.string(),
+              credit: z.string(),
+              debit: z.string(),
+            }),
+          )
+          .max(400)
+          .optional(),
+      })
+      .parse(req.body);
+
+    const { renderStatementPdf } = await import("../services/statement-pdf.js");
+    let pdf: Buffer;
+    try {
+      pdf = await renderStatementPdf(body);
+    } catch (err) {
+      const message = err instanceof Error ? err.message : "PDF render failed";
+      throw new AppError(500, `Could not generate statement PDF (${message})`, "PDF_RENDER_FAILED");
+    }
+    if (!pdf.length || pdf.length > MAX_STATEMENT_ATTACHMENT_BYTES) {
+      throw new AppError(500, "Generated PDF was empty or too large", "PDF_INVALID");
+    }
+
+    const safeTitle = body.title.replace(/[^\w\s-]/g, "").trim() || "Statement";
+    const filename =
+      body.filename?.replace(/[^\w.\- ]+/g, "_") ||
+      `kipit-${safeTitle.toLowerCase().replace(/\s+/g, "-")}.pdf`;
+
+    await writeAudit({
+      actorUserId: req.userId!,
+      action: "user.statement_pdf",
+      entityType: "User",
+      entityId: req.userId!,
+      after: { title: body.title, reference: body.reference, bytes: pdf.length },
+    }).catch(() => undefined);
+
+    res.setHeader("Content-Type", "application/pdf");
+    res.setHeader("Content-Disposition", `attachment; filename="${filename}"`);
+    res.setHeader("Content-Length", String(pdf.length));
+    res.send(pdf);
+  }),
+);
+
+/**
  * Email a statement with an attached file the client already generated.
  * Additive endpoint — app/web mailto flows stay unchanged until they opt in.
  */
