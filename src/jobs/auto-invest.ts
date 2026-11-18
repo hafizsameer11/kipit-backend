@@ -140,8 +140,7 @@ async function executeRule(
     creditAccountId: placementAccount.id,
   });
 
-  const maturityDate = new Date();
-  maturityDate.setDate(maturityDate.getDate() + tenorDays);
+  const maturityDate = new Date(Date.now() + tenorDays * 86_400_000);
 
   await prisma.placement.create({
     data: {

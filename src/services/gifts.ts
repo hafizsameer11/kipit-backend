@@ -191,8 +191,7 @@ export async function claimGiftForUser(
     ],
   });
 
-  const maturityDate = new Date();
-  maturityDate.setDate(maturityDate.getDate() + tenorDays);
+  const maturityDate = new Date(Date.now() + tenorDays * 86_400_000);
   const planName =
     gift.recipientName?.trim()
       ? `Gift for ${gift.recipientName.trim()}`

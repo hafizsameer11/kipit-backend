@@ -87,8 +87,8 @@ async function settleAsRollover(input: {
 
   const bands = await prisma.rateBand.findMany();
   const band = rateForTenorDays(tenorDays, bands);
-  const maturityDate = new Date(now);
-  maturityDate.setDate(maturityDate.getDate() + tenorDays);
+  // Keep the same clock time as settlement for the new tenor.
+  const maturityDate = new Date(now.getTime() + tenorDays * 86_400_000);
   const name = placement.name?.trim() || "Fixed plan";
 
   const placementTag = `rollover_${nanoid(10)}`;

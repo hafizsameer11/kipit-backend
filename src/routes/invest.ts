@@ -256,8 +256,7 @@ investRouter.post(
     const principal = nairaToKobo(body.amount);
     const breakdown = interestBreakdownFromNetRate(principal, rateBps, body.tenorDays);
     const pair = formatRatePair(rateBps);
-    const maturity = new Date();
-    maturity.setDate(maturity.getDate() + body.tenorDays);
+    const maturity = new Date(Date.now() + body.tenorDays * 86_400_000);
     const valueAtMaturity =
       body.interestPayout === "UPFRONT" ? principal : principal + breakdown.netKobo;
     res.json({
@@ -314,9 +313,6 @@ investRouter.post(
         "BELOW_MINIMUM",
       );
     }
-    const { interestValueDate, lagosDayStartUtc } = await import("../services/system-settings.js");
-    const value = await interestValueDate();
-    const startDate = lagosDayStartUtc(value.valueDate);
     const { rateBps } = await resolvePlanRate({
       planType: body.planType,
       tenorDays: body.tenorDays,
@@ -349,8 +345,9 @@ investRouter.post(
       creditAccountId: placementAccount.id,
     });
 
-    const maturityDate = new Date(startDate);
-    maturityDate.setUTCDate(maturityDate.getUTCDate() + body.tenorDays);
+    // Maturity = invest clock time + tenor (same time of day), not midnight + next job day.
+    const startDate = new Date();
+    const maturityDate = new Date(startDate.getTime() + body.tenorDays * 86_400_000);
 
     const placement = await prisma.placement.create({
       data: {
@@ -436,15 +433,13 @@ investRouter.post(
         grossRatePct: pair.grossRatePct,
         rateLabel: pair.label,
         tenorDays: body.tenorDays,
-        startDate: value.valueDate,
-        maturityDate: maturityDate.toISOString().slice(0, 10),
+        startDate: startDate.toISOString(),
+        maturityDate: maturityDate.toISOString(),
         grossInterest: koboToNaira(breakdown.grossKobo),
         withholdingTax: koboToNaira(breakdown.whtKobo),
         netInterest: koboToNaira(breakdown.netKobo),
         expectedInterest: koboToNaira(breakdown.netKobo),
         valueAtMaturity: koboToNaira(valueAtMaturity),
-        sameDayInterest: value.sameDay,
-        valueDateCutoff: value.cutoff,
       },
     });
   }),

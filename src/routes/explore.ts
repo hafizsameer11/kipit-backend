@@ -200,8 +200,7 @@ exploreRouter.post(
       creditAccountId: account.id,
     });
 
-    const maturityDate = new Date();
-    maturityDate.setDate(maturityDate.getDate() + product.tenorDays);
+    const maturityDate = new Date(Date.now() + product.tenorDays * 86_400_000);
 
     const placement = await prisma.placement.create({
       data: {

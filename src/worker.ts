@@ -1,4 +1,4 @@
-import { runMaturityEngine } from "./jobs/maturity.js";
+import { runDailyCallInterest, runDueMaturities, runMaturityEngine } from "./jobs/maturity.js";
 import { runKycVerificationJob } from "./jobs/kyc-verify.js";
 import { runMonnifyVaPollJob } from "./jobs/monnify-va-poll.js";
 import { runMarketingDigestJob } from "./jobs/marketing-digest.js";
@@ -80,6 +80,19 @@ async function tickCampaigns() {
   }
 }
 
+/** Settle plans as soon as startTime + tenor elapses (same clock time). */
+async function tickDueMaturities() {
+  try {
+    const result = await runDueMaturities();
+    if (result.matured || result.errors) {
+      console.log("[worker] due maturities", result);
+    }
+  } catch (err) {
+    console.error("[worker] due maturities failed", err);
+  }
+}
+
+/** Daily Call interest + catch-all maturity pass at configured Lagos time. */
 async function tickMaturityScheduled() {
   try {
     const { interestAccrual } = await getOpsCutoffs();
@@ -87,11 +100,12 @@ async function tickMaturityScheduled() {
     const dateKey = lagosDateKey();
     if (nowHm !== interestAccrual || lastMaturityDateKey === dateKey) return;
     lastMaturityDateKey = dateKey;
-    console.log(`[worker] running maturity/interest engine @ ${interestAccrual} Lagos…`);
-    const result = await runMaturityEngine();
-    console.log("[worker] maturity ok", result);
+    console.log(`[worker] running daily call interest @ ${interestAccrual} Lagos…`);
+    const call = await runDailyCallInterest();
+    const due = await runDueMaturities();
+    console.log("[worker] daily interest/maturity ok", { ...call, ...due });
   } catch (err) {
-    console.error("[worker] maturity failed", err);
+    console.error("[worker] maturity/interest failed", err);
   }
 }
 
@@ -204,6 +218,9 @@ async function main() {
 
   void tickOpsDigest();
   setInterval(() => void tickOpsDigest(), DIGEST_CHECK_MS);
+
+  void tickDueMaturities();
+  setInterval(() => void tickDueMaturities(), SCHEDULE_CHECK_MS);
 
   void tickMaturityScheduled();
   setInterval(() => void tickMaturityScheduled(), SCHEDULE_CHECK_MS);
