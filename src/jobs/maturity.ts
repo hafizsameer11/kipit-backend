@@ -8,16 +8,27 @@ export async function runMaturityEngine() {
   });
 
   try {
-    const today = new Date();
-    today.setHours(0, 0, 0, 0);
-    const tomorrow = new Date(today);
-    tomorrow.setDate(tomorrow.getDate() + 1);
+    const {
+      getOpsCutoffs,
+      lagosDateKey,
+      lagosDayStartUtc,
+      lagosHmOnDateUtc,
+      nextLagosDateKey,
+    } = await import("../services/system-settings.js");
+
+    // Settle on the Lagos calendar day the plan matures — not the next UTC day.
+    // Example: matures 18 Nov Lagos → due in [18 Nov 00:00 WAT, 19 Nov 00:00 WAT).
+    // Also catch overdue ACTIVE plans that missed an earlier run.
+    const todayKey = lagosDateKey();
+    const dayStart = lagosDayStartUtc(todayKey);
+    const dayEnd = lagosDayStartUtc(nextLagosDateKey(todayKey));
 
     const due = await prisma.placement.findMany({
       where: {
         status: "ACTIVE",
-        maturityDate: { gte: today, lt: tomorrow },
+        maturityDate: { not: null, lt: dayEnd },
       },
+      orderBy: { maturityDate: "asc" },
     });
 
     let processed = 0;
@@ -35,13 +46,6 @@ export async function runMaturityEngine() {
     // Daily call interest — credit Call Account so it compounds (product: daily on Call).
     // Value-date cut-off: CALL_DEPOSIT credits after yesterday's value cut-off are excluded
     // until the next accrual day (interest starts same day only if funded before cut-off).
-    const {
-      getOpsCutoffs,
-      lagosDateKey,
-      lagosHmOnDateUtc,
-    } = await import("../services/system-settings.js");
-    // previousLagosDateKey via nextLagosDateKey inverse
-    const todayKey = lagosDateKey();
     const [y, mo, d] = todayKey.split("-").map(Number);
     const yesterdayKey = new Date(Date.UTC(y!, mo! - 1, d! - 1)).toISOString().slice(0, 10);
     const { valueDate: valueCutoffHm } = await getOpsCutoffs();
@@ -74,7 +78,7 @@ export async function runMaturityEngine() {
         userId: acct.userId,
         amountKobo: daily,
         kind: "INTEREST",
-        idempotencyKey: `call-interest-${acct.userId}-${today.toISOString().slice(0, 10)}`,
+        idempotencyKey: `call-interest-${acct.userId}-${todayKey}`,
         description: "Call Account daily interest",
         debitAccountId: interestExpense.id,
       });
@@ -86,7 +90,14 @@ export async function runMaturityEngine() {
       data: {
         status: "ok",
         finishedAt: new Date(),
-        detail: { matured: processed, errors, callInterestAccounts: callCredits },
+        detail: {
+          matured: processed,
+          errors,
+          callInterestAccounts: callCredits,
+          lagosDay: todayKey,
+          window: { gte: null, lt: dayEnd.toISOString(), note: "ACTIVE maturityDate < Lagos tomorrow 00:00" },
+          dayStart: dayStart.toISOString(),
+        },
       },
     });
 
