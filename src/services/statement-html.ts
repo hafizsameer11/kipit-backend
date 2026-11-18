@@ -120,14 +120,15 @@ export function buildStatementHtml(input: StatementPdfDoc): string {
 
   const clientMeta = (input.clientMeta ?? []).slice(0, 4);
   const clientMetaHtml = clientMeta.length
-    ? `<div class="meta">${clientMeta
-        .map(
-          (c) => `<div class="meta-cell">
+    ? `<div class="gold-rule" aria-hidden="true"></div>
+       <div class="meta">${clientMeta
+         .map(
+           (c) => `<div class="meta-cell">
             <div class="meta-label">${escapeHtml(c.label)}</div>
             <div class="meta-value">${escapeHtml(c.value)}</div>
           </div>`,
-        )
-        .join("")}</div>`
+         )
+         .join("")}</div>`
     : "";
 
   const portfolio = input.portfolioSummary ?? [];
@@ -136,7 +137,17 @@ export function buildStatementHtml(input: StatementPdfDoc): string {
        <div class="summary-grid">${portfolio
          .map((r) => {
            const emphasize = /total portfolio value today/i.test(r.label);
-           return `<div class="summary-card${emphasize ? " summary-card--emphasis" : ""}">
+           const accent =
+             /net interest accrued/i.test(r.label) ||
+             /value at maturity/i.test(r.label);
+           const cls = [
+             "summary-card",
+             emphasize ? "summary-card--emphasis" : "",
+             accent && !emphasize ? "summary-card--accent" : "",
+           ]
+             .filter(Boolean)
+             .join(" ");
+           return `<div class="${cls}">
              <div class="summary-label">${escapeHtml(r.label)}</div>
              <div class="summary-value">${escapeHtml(r.value)}</div>
            </div>`;
@@ -215,44 +226,47 @@ export function buildStatementHtml(input: StatementPdfDoc): string {
 @font-face{font-family:'TeXGyrePagella';src:url('${regular}') format('opentype');font-weight:400;font-style:normal}
 @font-face{font-family:'TeXGyrePagella';src:url('${bold}') format('opentype');font-weight:700;font-style:normal}
 @font-face{font-family:'TeXGyrePagella';src:url('${italic}') format('opentype');font-weight:400;font-style:italic}
-*{box-sizing:border-box}
-html,body{margin:0;padding:0;background:#fff;color:${INK};font-family:${FONT}}
+*{box-sizing:border-box;font-family:${FONT} !important}
+html,body{margin:0;padding:0;background:#fff;color:${NAVY};font-family:${FONT}}
 @page{size:A4;margin:12mm 11mm}
 body{-webkit-print-color-adjust:exact;print-color-adjust:exact}
-.sheet{width:100%;max-width:186mm;margin:0 auto;padding:0;font-size:10.5pt;line-height:1.35}
-header{display:flex;align-items:stretch;justify-content:space-between;gap:14px;margin-bottom:12px}
-.logo{height:52px;width:auto;max-width:260px;object-fit:contain}
-.title-box{background:${NAVY};color:#fff;min-width:42%;max-width:48%;padding:14px 16px;display:flex;flex-direction:column;justify-content:center}
-.title-box .title{font-size:13pt;font-weight:700;letter-spacing:0.06em;text-transform:uppercase;line-height:1.2}
-.title-box .sub{margin-top:7px;font-size:9pt;line-height:1.4;color:rgba(255,255,255,0.9)}
-.meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:10px;background:${GOLD};padding:10px 12px;margin:0 0 14px}
-.meta-label{font-size:7.5pt;letter-spacing:0.08em;text-transform:uppercase;color:${NAVY};font-weight:700}
-.meta-value{margin-top:3px;font-size:10.5pt;font-weight:700;color:${INK}}
-h2{margin:18px 0 8px;font-size:9pt;letter-spacing:0.14em;text-transform:uppercase;color:${NAVY};font-weight:700}
-.summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:8px}
-.summary-card{border:1px solid ${LINE};background:#fff;padding:10px 11px 12px;min-height:68px}
+.sheet{width:100%;max-width:186mm;margin:0 auto;padding:0;font-size:10.5pt;line-height:1.4;color:${NAVY}}
+header{display:flex;align-items:stretch;justify-content:space-between;gap:16px;margin:0 0 0}
+.logo{height:56px;width:auto;max-width:280px;object-fit:contain}
+.title-box{background:${NAVY};color:#fff;min-width:46%;max-width:52%;padding:16px 18px;display:flex;flex-direction:column;justify-content:center}
+.title-box .title{font-size:14pt;font-weight:700;letter-spacing:0.04em;text-transform:uppercase;line-height:1.15}
+.title-box .sub{margin-top:8px;font-size:9.5pt;line-height:1.45;color:rgba(255,255,255,0.92);font-weight:400}
+/* Template: gold strip under logo/title, then light-gray client bar (not a full gold block). */
+.gold-rule{height:10px;background:${GOLD};margin:14px 0 0;width:100%}
+.meta{display:grid;grid-template-columns:repeat(4,minmax(0,1fr));gap:12px;background:#eef1f6;padding:12px 14px;margin:0 0 16px;border:none}
+.meta-label{font-size:8.5pt;letter-spacing:0;text-transform:none;color:#6b7280;font-weight:400}
+.meta-value{margin-top:4px;font-size:11.5pt;font-weight:700;color:${NAVY}}
+h2{margin:18px 0 9px;font-size:10pt;letter-spacing:0.12em;text-transform:uppercase;color:${NAVY};font-weight:700}
+.summary-grid{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:9px}
+.summary-card{border:1px solid #cfd6e4;background:#fff;padding:11px 12px 13px;min-height:72px}
+.summary-card--accent{border-left:5px solid ${GOLD}}
 .summary-card--emphasis{background:${NAVY};border-color:${NAVY}}
-.summary-label{font-size:8pt;line-height:1.35;color:${NAVY};font-weight:600}
-.summary-card--emphasis .summary-label{color:rgba(255,255,255,0.78)}
-.summary-value{margin-top:8px;font-size:13.5pt;line-height:1.15;font-weight:700;font-variant-numeric:tabular-nums}
+.summary-label{font-size:8.5pt;line-height:1.35;color:#6b7280;font-weight:400}
+.summary-card--emphasis .summary-label{color:rgba(255,255,255,0.8)}
+.summary-value{margin-top:9px;font-size:15pt;line-height:1.12;font-weight:700;color:${NAVY};font-variant-numeric:tabular-nums}
 .summary-card--emphasis .summary-value{color:#fff}
 table{width:100%;border-collapse:collapse;table-layout:auto}
-th{padding:7px 6px;background:${NAVY};color:#fff;font-size:7.5pt;text-transform:uppercase;letter-spacing:0.04em;font-weight:700;text-align:left;border:none}
+th{padding:8px 7px;background:${NAVY};color:#fff;font-size:8pt;text-transform:none;letter-spacing:0.02em;font-weight:700;text-align:left;border:none}
 th.num,td.num{text-align:right;font-variant-numeric:tabular-nums}
-td{padding:6px;border-bottom:1px solid ${LINE};font-size:9pt;vertical-align:top}
+td{padding:7px 6px;border-bottom:1px solid ${LINE};font-size:9.5pt;vertical-align:top;color:${NAVY}}
 tr.alt td{background:${ROW_ALT}}
 tr.total td{background:${NAVY};color:#fff;border:none}
 .strong{font-weight:700}
-.muted{color:${MUTED}}
+.muted{color:#6b7280}
 .small{font-size:8pt;margin-top:2px}
 .nowrap{white-space:nowrap}
 .note{margin-top:16px;background:${GOLD_SOFT};border:1px solid ${GOLD};padding:10px 12px;font-size:9pt;line-height:1.5;color:${NAVY_SOFT}}
 .footer-row{margin-top:14px;display:flex;align-items:flex-end;justify-content:space-between;gap:16px}
-.legal{flex:1;font-size:8pt;line-height:1.5;color:${INK}}
+.legal{flex:1;font-size:8pt;line-height:1.5;color:${NAVY}}
 .stamp-wrap{text-align:center;flex-shrink:0;width:120px}
 .stamp{width:100px;height:100px;object-fit:contain;display:block;margin:0 auto}
 .stamp-caption{margin-top:5px;font-size:7.5pt;line-height:1.3;color:${NAVY};font-weight:700}
-.contact{margin-top:14px;border-top:1px solid ${LINE};padding-top:8px;font-size:7.5pt;color:${MUTED}}
+.contact{margin-top:14px;border-top:1px solid ${LINE};padding-top:8px;font-size:7.5pt;color:#6b7280}
 </style>
 </head>
 <body>
