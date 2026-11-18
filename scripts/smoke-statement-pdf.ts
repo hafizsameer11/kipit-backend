@@ -27,8 +27,33 @@ async function main() {
         wht: "₦0.04",
         net: "₦0.36",
       },
+      {
+        label: "Fixed plans: expected interest at maturity",
+        gross: "₦102.80",
+        wht: "₦10.28",
+        net: "₦92.52",
+      },
+      {
+        label: "Call Account: interest accrued to date",
+        gross: "₦0.00",
+        wht: "₦0.00",
+        net: "₦0.00",
+      },
+    ],
+    investments: [
+      {
+        plan: "Kipit Lock, 180 days · Started 15 Sep 2026",
+        principal: "₦5,039.72",
+        rate: "16.20% (18.00%)",
+        maturity: "14 Mar 2027",
+        gross: "₦102.80",
+        wht: "₦10.28",
+        net: "₦92.52",
+        valueAtMaturity: "₦5,132.24",
+      },
     ],
   });
+  fs.mkdirSync("assets/statement", { recursive: true });
   fs.writeFileSync("assets/statement/_smoke.pdf", buf);
   console.log("pdf bytes", buf.length, "header", buf.subarray(0, 5).toString());
 }
