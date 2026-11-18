@@ -2,6 +2,7 @@ import { prisma } from "../lib/prisma.js";
 import { brandWrap, sendEmail } from "./email.js";
 import { sendPushToUser, type PushKind } from "./push.js";
 
+/** B16 — Lotanna welcome (exact wording from feedback PDF pp.25–26). */
 export async function sendWelcomeEmail(input: {
   to: string;
   firstName: string;
@@ -12,44 +13,52 @@ export async function sendWelcomeEmail(input: {
   const tempBlock = input.tempPassword
     ? `<p style="margin:16px 0;padding:12px 14px;background:#f8fafc;border-radius:12px;border:1px solid #e2e8f0"><strong>Temporary password:</strong> <code>${input.tempPassword}</code><br/><span style="color:#64748b;font-size:13px">Please sign in and change it right away.</span></p>`
     : "";
-  // B16 — Lotanna welcome (SEC + RMB + ₦1,000 + WhatsApp + support).
   const subject = "Welcome to Kipit";
   const text = [
-    `Dear ${name},`,
+    `Welcome to Kipit, ${name}.`,
     "",
-    "Welcome to Kipit.",
+    "Thank you for choosing to grow your money with us.",
     "",
-    "Kipit Asset Management Limited is licensed and regulated by the Securities and Exchange Commission (SEC), Nigeria. Your funds are held by Rand Merchant Bank, our independent custodian.",
+    "I started Kipit because I believe every Nigerian deserves a safe, simple and rewarding place to build wealth, without high minimums, hidden charges or confusing terms.",
     "",
-    "You can start investing from ₦1,000 — in a Call Account that earns daily, or in Kipit Lock and Kipit Flex plans with clear rates and tenors.",
-    input.tempPassword ? `Temporary password: ${input.tempPassword}` : "",
+    "Your investments are managed by Kipit Asset Management, a fund manager licensed by the Securities and Exchange Commission (SEC), and your funds are held with Rand Merchant Bank, our custodian.",
     "",
-    "Questions? WhatsApp +234 707 198 5171 or email support@mykipit.com.",
+    "You can start with as little as ₦1,000, see your rate before you invest, and watch your interest grow every day.",
+    "",
+    "Our promise to you is simple. We will keep our word, we will be open with you, and we will treat your money with the same care we give our own.",
+    "",
+    "If you ever need help, our team is one message away on WhatsApp at +234 707 198 5171 or at support@mykipit.com.",
+    "",
+    "Welcome to the Kipit family. Let's build wealth, deliberately.",
+    input.tempPassword ? "" : null,
+    input.tempPassword ? `Temporary password: ${input.tempPassword}` : null,
     "",
     "Warm regards,",
     "Lotanna",
-    "Kipit Asset Management Limited",
   ]
-    .filter(Boolean)
+    .filter((line) => line != null)
     .join("\n");
 
   const html = brandWrap(
     "Welcome to Kipit",
     `
-      <p style="margin:0 0 12px">Dear ${name},</p>
-      <p style="margin:0 0 12px">Welcome to Kipit.</p>
-      <p style="margin:0 0 12px"><strong>Kipit Asset Management Limited</strong> is licensed and regulated by the Securities and Exchange Commission (SEC), Nigeria. Your funds are held by <strong>Rand Merchant Bank</strong>, our independent custodian.</p>
-      <p style="margin:0 0 12px">You can start investing from <strong>₦1,000</strong> — in a Call Account that earns daily, or in Kipit Lock and Kipit Flex plans with clear rates and tenors.</p>
+      <p style="margin:0 0 12px">Welcome to Kipit, <strong>${escapeHtml(name)}</strong>.</p>
+      <p style="margin:0 0 12px">Thank you for choosing to grow your money with us.</p>
+      <p style="margin:0 0 12px">I started Kipit because I believe every Nigerian deserves a safe, simple and rewarding place to build wealth, without high minimums, hidden charges or confusing terms.</p>
+      <p style="margin:0 0 12px">Your investments are managed by <strong>Kipit Asset Management</strong>, a fund manager licensed by the Securities and Exchange Commission (SEC), and your funds are held with <strong>Rand Merchant Bank</strong>, our custodian.</p>
+      <p style="margin:0 0 12px">You can start with as little as <strong>₦1,000</strong>, see your rate before you invest, and watch your interest grow every day.</p>
+      <p style="margin:0 0 12px">Our promise to you is simple. We will keep our word, we will be open with you, and we will treat your money with the same care we give our own.</p>
+      <p style="margin:0 0 12px">If you ever need help, our team is one message away on WhatsApp at <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or at <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+      <p style="margin:0 0 12px">Welcome to the Kipit family. Let's build wealth, deliberately.</p>
       ${tempBlock}
-      <p style="margin:0 0 12px">Questions? WhatsApp <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or email <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
-      <p style="margin:16px 0 0">Warm regards,<br/><strong>Lotanna</strong><br/>Kipit Asset Management Limited</p>
+      <p style="margin:16px 0 0">Warm regards,<br/><strong>Lotanna</strong></p>
     `,
   );
 
   return sendEmail({ to: input.to, subject, text, html });
 }
 
-/** B24 — profile update confirmation email (includes activity date/time). */
+/** B24 — profile update email (exact wording from feedback PDF pp.32–33). */
 export async function sendProfileUpdatedEmail(input: {
   to: string;
   firstName: string;
@@ -58,43 +67,60 @@ export async function sendProfileUpdatedEmail(input: {
   activityAt?: string | Date;
 }) {
   const name = input.firstName.trim() || "there";
-  const when = formatActivityAt(input.activityAt ?? new Date());
+  const { date, time } = formatActivityParts(input.activityAt ?? new Date());
   const subject = "Your Kipit profile was updated";
   const text = [
     `Dear ${name},`,
     "",
-    "Your Kipit profile was updated.",
+    `Your Kipit profile was updated on ${date} at ${time}.`,
     "",
-    `Change made: ${input.changeSummary}`,
-    `Date and time: ${when}`,
+    `Change made: ${input.changeSummary}.`,
     "",
-    "If this was not you, contact us on WhatsApp +234 707 198 5171 or support@mykipit.com.",
+    "If you made this change, no further action is needed. If you did not initiate this action, kindly reach out to our support team immediately on WhatsApp at +234 707 198 5171 or at support@mykipit.com.",
     "",
-    "— Kipit Asset Management Limited",
+    "The Kipit Team",
   ].join("\n");
   const html = brandWrap(
     "Your Kipit profile was updated",
     `
-      <p style="margin:0 0 12px">Dear ${name},</p>
-      <p style="margin:0 0 12px">Your Kipit profile was updated.</p>
-      <p style="margin:0 0 8px"><strong>Change made:</strong> ${escapeHtml(input.changeSummary)}</p>
-      <p style="margin:0 0 16px"><strong>Date and time:</strong> ${escapeHtml(when)}</p>
-      <p style="margin:0 0 12px">If this was not you, WhatsApp <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or email <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+      <p style="margin:0 0 12px">Dear ${escapeHtml(name)},</p>
+      <p style="margin:0 0 12px">Your Kipit profile was updated on <strong>${escapeHtml(date)}</strong> at <strong>${escapeHtml(time)}</strong>.</p>
+      <p style="margin:0 0 16px"><strong>Change made:</strong> ${escapeHtml(input.changeSummary)}.</p>
+      <p style="margin:0 0 12px">If you made this change, no further action is needed. If you did not initiate this action, kindly reach out to our support team immediately on WhatsApp at <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or at <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+      <p style="margin:16px 0 0">The Kipit Team</p>
     `,
   );
   return sendEmail({ to: input.to, subject, text, html });
 }
 
-function formatActivityAt(value: string | Date) {
+function formatActivityParts(value: string | Date) {
   const d = value instanceof Date ? value : new Date(value);
-  if (Number.isNaN(d.getTime())) return String(value);
-  return d.toLocaleString("en-NG", {
+  if (Number.isNaN(d.getTime())) {
+    const raw = String(value);
+    return { date: raw, time: "" };
+  }
+  const date = d.toLocaleDateString("en-NG", {
     timeZone: "Africa/Lagos",
     day: "2-digit",
     month: "short",
     year: "numeric",
+  });
+  const time = d.toLocaleTimeString("en-NG", {
+    timeZone: "Africa/Lagos",
     hour: "2-digit",
     minute: "2-digit",
+  });
+  return { date, time };
+}
+
+function formatMaturityDate(value?: string | Date) {
+  const d = value instanceof Date ? value : value ? new Date(value) : new Date();
+  if (Number.isNaN(d.getTime())) return formatActivityParts(new Date()).date;
+  return d.toLocaleDateString("en-NG", {
+    timeZone: "Africa/Lagos",
+    day: "2-digit",
+    month: "short",
+    year: "numeric",
   });
 }
 
@@ -110,7 +136,7 @@ function nairaLine(n: number) {
   return `₦${Math.round(n).toLocaleString("en-NG")}`;
 }
 
-/** B15 — dedicated maturity email (not the generic investment txn template). */
+/** B15 — maturity email (exact wording from feedback PDF pp.24–25). */
 export async function sendMaturityEmail(input: {
   to: string;
   firstName: string;
@@ -125,50 +151,66 @@ export async function sendMaturityEmail(input: {
   balanceNaira?: number;
   rolloverRatePct?: string;
   rolloverMaturityDate?: string;
+  /** Calendar day the plan matured (defaults to today). */
+  maturedOn?: string | Date;
 }) {
   const name = input.firstName.trim() || "there";
+  const maturedOn = formatMaturityDate(input.maturedOn);
+  const total = nairaLine(input.totalPaidNaira);
   const subject = "Hooray! Your Kipit investment has matured";
-  const outcomeLine =
+
+  const instructionBit =
     input.outcome === "rollover"
-      ? `Your payout has been rolled over into a new ${input.tenorDays}-day plan at ${input.rolloverRatePct ?? "—"}% p.a., maturing on ${input.rolloverMaturityDate ?? "—"}.`
+      ? `rolled over into a new ${input.tenorDays}-day plan at ${input.rolloverRatePct ?? "—"}% p.a., maturing on ${input.rolloverMaturityDate ?? "—"}`
       : input.outcome === "call"
-        ? `₦${input.totalPaidNaira.toLocaleString("en-NG")} (principal + net interest) has been moved to your Call Account. Your Call Account balance is now ${nairaLine(input.balanceNaira ?? 0)}.`
-        : `₦${input.totalPaidNaira.toLocaleString("en-NG")} (principal + net interest) has been paid into your wallet. Your wallet balance is now ${nairaLine(input.balanceNaira ?? 0)}.`;
+        ? "moved to your Call Account"
+        : "paid into your Kipit wallet";
+
+  const balanceLine =
+    input.outcome === "rollover"
+      ? null
+      : input.outcome === "call"
+        ? `Your Call Account balance is now ${nairaLine(input.balanceNaira ?? 0)}.`
+        : `Your wallet balance is now ${nairaLine(input.balanceNaira ?? 0)}.`;
+
+  const instructionLine = `In line with your maturity instruction, ${total} has been ${instructionBit}.`;
 
   const text = [
     `Dear ${name},`,
     "",
-    "Hooray! Your Kipit investment has matured.",
+    `Congratulations! Your ${input.tenorDays}-day plan reached maturity today, ${maturedOn}.`,
     "",
-    `Plan: ${input.planLabel}`,
     `Principal: ${nairaLine(input.principalNaira)}`,
     `Gross interest: ${nairaLine(input.grossInterestNaira)}`,
-    `Less WHT (10%): ${nairaLine(input.whtNaira)}`,
+    `Less withholding tax (10%): ${nairaLine(input.whtNaira)}`,
     `Net interest: ${nairaLine(input.netInterestNaira)}`,
-    `Total paid: ${nairaLine(input.totalPaidNaira)}`,
+    `Total paid (principal + net interest): ${total}`,
     "",
-    outcomeLine,
+    instructionLine,
+    ...(balanceLine ? [balanceLine, ""] : [""]),
+    "Thank you for trusting us with your money. If you have any questions, reach us on WhatsApp at +234 707 198 5171 or at support@mykipit.com.",
     "",
-    "Questions? WhatsApp +234 707 198 5171 or email support@mykipit.com.",
-    "",
-    "— Kipit Asset Management Limited",
+    "Warm regards,",
+    "The Kipit Team",
   ].join("\n");
 
   const html = brandWrap(
     "Hooray! Your Kipit investment has matured",
     `
-      <p style="margin:0 0 12px">Dear ${name},</p>
-      <p style="margin:0 0 16px">Hooray! Your Kipit investment has matured.</p>
-      <p style="margin:0 0 8px"><strong>Plan:</strong> ${escapeHtml(input.planLabel)}</p>
+      <p style="margin:0 0 12px">Dear ${escapeHtml(name)},</p>
+      <p style="margin:0 0 16px">Congratulations! Your ${input.tenorDays}-day plan reached maturity today, <strong>${escapeHtml(maturedOn)}</strong>.</p>
+      <p style="margin:0 0 8px;color:#64748b;font-size:13px">Plan: ${escapeHtml(input.planLabel)}</p>
       <table style="width:100%;border-collapse:collapse;margin:12px 0 16px;font-size:14px">
         <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Principal</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.principalNaira)}</td></tr>
         <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Gross interest</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.grossInterestNaira)}</td></tr>
-        <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Less WHT (10%)</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.whtNaira)}</td></tr>
+        <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Less withholding tax (10%)</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.whtNaira)}</td></tr>
         <tr><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;color:#64748b">Net interest</td><td style="padding:8px 0;border-bottom:1px solid #e2e8f0;text-align:right;font-weight:700">${nairaLine(input.netInterestNaira)}</td></tr>
-        <tr><td style="padding:10px 0;color:#0b1d3a;font-weight:800">Total paid</td><td style="padding:10px 0;text-align:right;font-weight:800;color:#b98113">${nairaLine(input.totalPaidNaira)}</td></tr>
+        <tr><td style="padding:10px 0;color:#0b1d3a;font-weight:800">Total paid (principal + net interest)</td><td style="padding:10px 0;text-align:right;font-weight:800;color:#b98113">${total}</td></tr>
       </table>
-      <p style="margin:0 0 16px">${escapeHtml(outcomeLine)}</p>
-      <p style="margin:0">Questions? WhatsApp <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or email <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+      <p style="margin:0 0 12px">${escapeHtml(instructionLine)}</p>
+      ${balanceLine ? `<p style="margin:0 0 16px">${escapeHtml(balanceLine)}</p>` : ""}
+      <p style="margin:0 0 12px">Thank you for trusting us with your money. If you have any questions, reach us on WhatsApp at <a href="https://wa.me/2347071985171">+234 707 198 5171</a> or at <a href="mailto:support@mykipit.com">support@mykipit.com</a>.</p>
+      <p style="margin:16px 0 0">Warm regards,<br/><strong>The Kipit Team</strong></p>
     `,
   );
   return sendEmail({ to: input.to, subject, text, html });

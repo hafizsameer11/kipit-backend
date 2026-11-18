@@ -57,7 +57,9 @@ export function brandWrap(title: string, bodyHtml: string) {
       <div style="background:#fff;border:1px solid #e2e8f0;border-top:0;border-radius:0 0 16px 16px;padding:24px;line-height:1.55">
         ${bodyHtml}
         <p style="margin:24px 0 0;color:#64748b;font-size:12px;line-height:1.5">
-          Kipit is powered by Kipit Asset Management Limited. All funds are managed by Kipit Asset Management Limited.
+          Kipit Asset Management Limited | RC 8735505<br/>
+          Client funds are held by Rand Merchant Bank as custodian and managed by Kipit Asset Management. Both are licensed by the Securities and Exchange Commission (SEC).<br/>
+          WhatsApp +234 707 198 5171 · support@mykipit.com
         </p>
       </div>
     </div>

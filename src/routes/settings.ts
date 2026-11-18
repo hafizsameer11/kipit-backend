@@ -215,8 +215,35 @@ settingsRouter.patch(
     // B24 — email on profile update
     if (updated.email) {
       const { sendProfileUpdatedEmail, createUserNotification } = await import("../services/notify.js");
+      const PROFILE_CHANGE_LABELS: Record<string, string> = {
+        firstName: "First name",
+        middleName: "Middle name",
+        surname: "Surname",
+        phone: "Phone number",
+        dateOfBirth: "Date of birth",
+        gender: "Gender",
+        occupation: "Occupation",
+        employmentStatus: "Employment status",
+        sourceOfFunds: "Source of funds",
+        maritalStatus: "Marital status",
+        spouseFullName: "Spouse full name",
+        mothersMaidenName: "Mother's maiden name",
+        maidenName: "Maiden name",
+        maidenNameNa: "Maiden name",
+        nationality: "Nationality",
+        stateOfOrigin: "State of origin",
+        lgaOfOrigin: "LGA of origin",
+        hometown: "Hometown",
+        hometownLga: "Hometown LGA",
+        nextOfKinName: "Next of kin name",
+        nextOfKinRelationship: "Next of kin relationship",
+        nextOfKinPhone: "Next of kin phone",
+        nextOfKinAddress: "Next of kin address",
+      };
       const changed = Object.keys(body).filter((k) => (body as Record<string, unknown>)[k] !== undefined);
-      const changeSummary = changed.length ? changed.join(", ") : "Profile details";
+      const changeSummary = changed.length
+        ? changed.map((k) => PROFILE_CHANGE_LABELS[k] ?? k).join(", ")
+        : "Profile details";
       await sendProfileUpdatedEmail({
         to: updated.email,
         firstName: updated.firstName,
@@ -267,7 +294,7 @@ settingsRouter.patch(
       await sendProfileUpdatedEmail({
         to: user.email,
         firstName: user.firstName,
-        changeSummary: "Residential address",
+        changeSummary: "residential address",
       }).catch(() => undefined);
       await createUserNotification({
         userId: user.id,

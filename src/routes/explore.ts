@@ -15,6 +15,14 @@ import { rejectIfMaintenance } from "../middleware/maintenance.js";
 import { assertFeatureEnabled } from "../services/app-access.js";
 import { formatRatePair, interestBreakdownFromNetRate } from "../services/wht.js";
 
+/** B17 — only these four categories on the customer Explore surface. */
+const CANONICAL_CATEGORY_SLUGS = [
+  "treasury-bills",
+  "commercial-papers",
+  "mutual-funds",
+  "bonds",
+] as const;
+
 function serializeExploreProduct(p: {
   id: string;
   slug: string;
@@ -67,11 +75,17 @@ exploreRouter.get(
   "/categories",
   asyncHandler(async (_req, res) => {
     const cats = await prisma.productCategory.findMany({
+      where: { slug: { in: [...CANONICAL_CATEGORY_SLUGS] } },
       orderBy: { sortOrder: "asc" },
       include: { _count: { select: { products: true } } },
     });
+    const bySlug = new Map(cats.map((c) => [c.slug, c]));
+    // Preserve B17 order even if DB sortOrder differs.
+    const ordered = CANONICAL_CATEGORY_SLUGS.map((slug) => bySlug.get(slug)).filter(
+      (c): c is NonNullable<typeof c> => Boolean(c),
+    );
     res.json({
-      data: cats.map((c) => ({
+      data: ordered.map((c) => ({
         id: c.id,
         slug: c.slug,
         name: c.name,
@@ -85,8 +99,25 @@ exploreRouter.get(
   "/products",
   asyncHandler(async (req, res) => {
     const categorySlug = typeof req.query.category === "string" ? req.query.category : undefined;
+    const slugOk =
+      categorySlug &&
+      (CANONICAL_CATEGORY_SLUGS as readonly string[]).includes(categorySlug)
+        ? categorySlug
+        : undefined;
     const products = await prisma.product.findMany({
-      where: categorySlug ? { category: { slug: categorySlug } } : undefined,
+      where: {
+        category: {
+          slug: slugOk ? slugOk : { in: [...CANONICAL_CATEGORY_SLUGS] },
+        },
+        // Hide obvious seed / QA junk names from the customer catalog.
+        NOT: {
+          OR: [
+            { name: { equals: "123", mode: "insensitive" } },
+            { name: { startsWith: "test", mode: "insensitive" } },
+            { slug: { startsWith: "test-", mode: "insensitive" } },
+          ],
+        },
+      },
       include: { category: true },
       orderBy: { name: "asc" },
     });

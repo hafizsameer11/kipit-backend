@@ -319,13 +319,16 @@ export async function maturePlacement(input: {
     include: { notificationPrefs: true },
   });
 
+  const maturedOn = placement.maturityDate ?? new Date();
+  const totalFmt = payoutNaira.toLocaleString("en-NG");
+
   if (rolledOver) {
     const ratePct = (rolledOver.rateBps / 10000).toFixed(2);
     const matures = rolledOver.maturityDate.toISOString().slice(0, 10);
     await createUserNotification({
       userId: placement.userId,
       title: `Hooray, ${firstName}!`,
-      body: `Your ${tenorDays}-day plan has matured. ₦${payoutNaira.toLocaleString("en-NG")} (principal + interest) has been rolled over into a new ${tenorDays}-day plan at ${ratePct}% p.a., maturing on ${matures}.`,
+      body: `Your ${tenorDays}-day plan has matured and ₦${totalFmt} has been rolled over into a new ${tenorDays}-day plan at ${ratePct}% p.a., maturing on ${matures}.`,
       href: "/portfolio",
       pushKind: "maturity",
     }).catch(() => undefined);
@@ -343,6 +346,7 @@ export async function maturePlacement(input: {
         outcome: "rollover",
         rolloverRatePct: ratePct,
         rolloverMaturityDate: matures,
+        maturedOn,
       }).catch(() => undefined);
     }
   } else {
@@ -350,11 +354,15 @@ export async function maturePlacement(input: {
       ? await ensureUserCall(placement.userId)
       : await ensureUserWallet(placement.userId);
     const balNaira = koboToNaira(destBalance.balanceKobo);
-    const destLabel = toCall ? "Call Account" : "wallet";
+    const balFmt = balNaira.toLocaleString("en-NG");
+    // B15 in-app wording from feedback PDF.
+    const body = toCall
+      ? `Your ${tenorDays}-day plan has matured. ₦${totalFmt} has been moved to your Call Account, where it will keep earning daily interest. Your Call Account balance is now ₦${balFmt}.`
+      : `Your ${tenorDays}-day plan has matured. ₦${totalFmt} (principal + interest) has been paid into your wallet. Your wallet balance is now ₦${balFmt}.`;
     await createUserNotification({
       userId: placement.userId,
       title: `Hooray, ${firstName}!`,
-      body: `Your ${tenorDays}-day plan has matured. ₦${payoutNaira.toLocaleString("en-NG")} (principal + interest) has been paid into your ${destLabel}. Your ${destLabel} balance is now ₦${balNaira.toLocaleString("en-NG")}.`,
+      body,
       href: "/portfolio",
       pushKind: "maturity",
     }).catch(() => undefined);
@@ -371,6 +379,7 @@ export async function maturePlacement(input: {
         totalPaidNaira: payoutNaira,
         outcome: toCall ? "call" : "wallet",
         balanceNaira: balNaira,
+        maturedOn,
       }).catch(() => undefined);
     }
   }
