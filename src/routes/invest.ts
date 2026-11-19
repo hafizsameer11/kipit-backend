@@ -17,8 +17,9 @@ import {
   moveWalletToCall,
   creditWalletFrom,
   ensureSystemAccount,
+  placementInterestKobo,
+  debitWallet,
 } from "../services/money.js";
-import { debitWallet } from "../services/money.js";
 import { writeAudit } from "../services/audit.js";
 import { rejectIfMaintenance } from "../middleware/maintenance.js";
 import {
@@ -557,6 +558,8 @@ investRouter.post(
 
     const payout = placement.interestPayout ?? "AT_MATURITY";
     const topUpInterest = interestBreakdownFromNetRate(amountKobo, placement.rateBps, daysLeft);
+    // Expected interest before this top-up (honors any prior override).
+    const priorExpectedNet = placementInterestKobo(placement);
 
     // Lock upfront: credit net interest for remaining days on the top-up amount.
     if (payout === "UPFRONT" && topUpInterest.netKobo > 0n) {
@@ -578,10 +581,18 @@ investRouter.post(
       });
     }
 
+    // B26 / C7 — at-maturity plans: store full expected NET as original + top-up×remaining days
+    // so VAM matches app/statement (never recompute as newPrincipal × full tenor).
+    const nextOverride =
+      payout === "AT_MATURITY"
+        ? priorExpectedNet + topUpInterest.netKobo
+        : placement.interestOverrideKobo;
+
     const updated = await prisma.placement.update({
       where: { id: placement.id },
       data: {
         principalKobo: placement.principalKobo + amountKobo,
+        interestOverrideKobo: nextOverride,
         lastTopUpAt: now,
         // Clear any pending break so Flex lock restarts from this top-up.
         breakRequestedAt: null,

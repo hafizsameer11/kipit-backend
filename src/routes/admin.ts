@@ -21,6 +21,7 @@ import {
   canViewAum,
   type AdminRequest,
 } from "../middleware/admin.js";
+import { buildMaturityTracker } from "../services/maturity-tracker.js";
 
 /** True SUPER role only — GLOBAL is not treated as super for privileged overrides. */
 function assertSuperAdmin(req: AdminRequest) {
@@ -483,167 +484,169 @@ adminRouter.get(
     });
     const activePlacements = await prisma.placement.findMany({
       where: { status: "ACTIVE" },
-      include: { product: { include: { category: true } } },
+      include: {
+        product: { include: { category: true } },
+        user: { select: { firstName: true, surname: true, email: true } },
+      },
     });
-    let fixedPrincipal = 0n;
-    let explorePrincipal = 0n;
-    let lockPrincipal = 0n;
-    let flexPrincipal = 0n;
-    let lockUpfrontPrincipal = 0n;
-    let lockMaturityPrincipal = 0n;
-    let valueAtMaturityKobo = 0n;
-    let interestAccruedKobo = 0n;
-    let interestRemainingKobo = 0n;
-    let accruedGrossKobo = 0n;
-    let accruedWhtKobo = 0n;
-    let expectedGrossKobo = 0n;
-    let expectedWhtKobo = 0n;
-    let expectedNetKobo = 0n;
-    const taxByCategory = new Map<
-      string,
-      { principal: bigint; accruedGross: bigint; accruedWht: bigint; accruedNet: bigint }
-    >();
-
-    for (const p of activePlacements) {
-      if (p.kind === "EXPLORE") explorePrincipal += p.principalKobo;
-      else if (p.kind === "FIXED") fixedPrincipal += p.principalKobo;
-
-      if (p.kind === "FIXED" || p.kind === "EXPLORE") {
-        const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
-        const payout = p.interestPayout ?? "AT_MATURITY";
-        if (planType === "LOCK") {
-          lockPrincipal += p.principalKobo;
-          if (payout === "UPFRONT") lockUpfrontPrincipal += p.principalKobo;
-          else lockMaturityPrincipal += p.principalKobo;
-        } else if (planType === "FLEX") {
-          flexPrincipal += p.principalKobo;
-        }
-
-        const accrued = accruedInterestToDateKobo(p);
-        const accruedBd = interestBreakdownFromNetAmount(accrued, p.rateBps);
-        const expectedBd =
-          p.interestOverrideKobo != null
-            ? interestBreakdownFromNetAmount(p.interestOverrideKobo, p.rateBps)
-            : p.tenorDays != null
-              ? interestBreakdownFromNetRate(p.principalKobo, p.rateBps, p.tenorDays)
-              : null;
-        const full = expectedBd?.netKobo ?? placementInterestKobo(p);
-        interestAccruedKobo += accrued;
-        accruedGrossKobo += accruedBd.grossKobo;
-        accruedWhtKobo += accruedBd.whtKobo;
-        if (expectedBd) {
-          expectedGrossKobo += expectedBd.grossKobo;
-          expectedWhtKobo += expectedBd.whtKobo;
-          expectedNetKobo += expectedBd.netKobo;
-        }
-        const remaining = full > accrued ? full - accrued : 0n;
-        interestRemainingKobo += remaining;
-        valueAtMaturityKobo +=
-          payout === "UPFRONT" ? p.principalKobo : p.principalKobo + full;
-
-        const cat =
-          p.kind === "EXPLORE"
-            ? p.product?.category?.name ?? "Explore"
-            : planType === "FLEX"
-              ? "Kipit Flex"
-              : "Kipit Lock";
-        const bucket = taxByCategory.get(cat) ?? {
-          principal: 0n,
-          accruedGross: 0n,
-          accruedWht: 0n,
-          accruedNet: 0n,
-        };
-        bucket.principal += p.principalKobo;
-        bucket.accruedGross += accruedBd.grossKobo;
-        bucket.accruedWht += accruedBd.whtKobo;
-        bucket.accruedNet += accruedBd.netKobo;
-        taxByCategory.set(cat, bucket);
-      }
-    }
-
-    const pendingFlexBreaks = await prisma.placement.findMany({
-      where: {
-        status: "ACTIVE",
-        planType: "FLEX",
-        breakRequestedAt: { not: null },
-      },
-      include: { user: { select: { firstName: true, surname: true, email: true } } },
-      orderBy: { breakRequestedAt: "asc" },
-      take: 50,
-    });
-
-    const walletKobo = wallets._sum.balanceKobo ?? 0n;
-    const callKobo = call._sum.balanceKobo ?? 0n;
-    const principalKobo = walletKobo + callKobo + fixedPrincipal + explorePrincipal;
-    const fumKobo = principalKobo + interestAccruedKobo;
-    const users = await prisma.user.count();
-    const pendingKyc = await prisma.kycProfile.count({ where: { status: "PENDING_REVIEW" } });
-    const pendingWithdrawals = await prisma.withdrawalRequest.count({
-      where: { status: "PROCESSING" },
-    });
-    const recentAudit = await prisma.auditEvent.findMany({
-      orderBy: { createdAt: "desc" },
-      take: 8,
-    });
-    const showAum = canViewAum(req.adminRole);
-
-    res.json({
-      data: {
-        fum: showAum ? koboToNaira(fumKobo) : null,
-        principal: showAum ? koboToNaira(principalKobo) : null,
-        canViewAum: showAum,
-        users,
-        pendingKyc,
-        pendingWithdrawals,
-        interestAccrued: showAum ? koboToNaira(interestAccruedKobo) : 0,
-        interestPayable: showAum ? koboToNaira(interestRemainingKobo) : 0,
-        recentAudit,
-        breakdown: showAum
-          ? {
-              wallet: koboToNaira(walletKobo),
-              call: koboToNaira(callKobo),
-              fixed: koboToNaira(fixedPrincipal),
-              explore: koboToNaira(explorePrincipal),
-              placements: koboToNaira(fixedPrincipal + explorePrincipal),
-              accrued: koboToNaira(interestAccruedKobo),
-              lock: koboToNaira(lockPrincipal),
-              flex: koboToNaira(flexPrincipal),
-              lockUpfront: koboToNaira(lockUpfrontPrincipal),
-              lockAtMaturity: koboToNaira(lockMaturityPrincipal),
-              valueAtMaturity: koboToNaira(valueAtMaturityKobo),
-            }
-          : null,
-        tax: showAum
-          ? {
-              accruedGross: koboToNaira(accruedGrossKobo),
-              accruedWht: koboToNaira(accruedWhtKobo),
-              accruedNet: koboToNaira(interestAccruedKobo),
-              expectedGross: koboToNaira(expectedGrossKobo),
-              expectedWht: koboToNaira(expectedWhtKobo),
-              expectedNet: koboToNaira(expectedNetKobo),
-              byCategory: [...taxByCategory.entries()].map(([category, b]) => ({
-                category,
-                principal: koboToNaira(b.principal),
-                accruedGross: koboToNaira(b.accruedGross),
-                accruedWht: koboToNaira(b.accruedWht),
-                accruedNet: koboToNaira(b.accruedNet),
-              })),
-            }
-          : null,
-        pendingFlexBreaks: pendingFlexBreaks.map((p) => ({
-          id: p.id,
-          userId: p.userId,
-          user: `${p.user.firstName} ${p.user.surname}`.trim(),
-          email: p.user.email,
-          principal: koboToNaira(p.principalKobo),
-          breakRequestedAt: p.breakRequestedAt?.toISOString() ?? null,
-          breakCreditAt: p.breakCreditAt?.toISOString() ?? null,
-        })),
-      },
-    });
-  }),
-);
-
+
+    const tracker = buildMaturityTracker(activePlacements);
+
+    let fixedPrincipal = 0n;
+    let explorePrincipal = 0n;
+    let lockPrincipal = 0n;
+    let flexPrincipal = 0n;
+    let lockUpfrontPrincipal = 0n;
+    let lockMaturityPrincipal = 0n;
+    let interestAccruedKobo = 0n;
+    let accruedGrossKobo = 0n;
+    let accruedWhtKobo = 0n;
+
+    const taxByCategory = new Map<
+      string,
+      { principal: bigint; accruedGross: bigint; accruedWht: bigint; accruedNet: bigint }
+    >();
+
+    for (const p of activePlacements) {
+      if (p.kind === "EXPLORE") explorePrincipal += p.principalKobo;
+      else if (p.kind === "FIXED") fixedPrincipal += p.principalKobo;
+
+      if (p.kind === "FIXED" || p.kind === "EXPLORE") {
+        const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
+        const payout = p.interestPayout ?? "AT_MATURITY";
+        if (planType === "LOCK") {
+          lockPrincipal += p.principalKobo;
+          if (payout === "UPFRONT") lockUpfrontPrincipal += p.principalKobo;
+          else lockMaturityPrincipal += p.principalKobo;
+        } else if (planType === "FLEX") {
+          flexPrincipal += p.principalKobo;
+        }
+
+        const accrued = accruedInterestToDateKobo(p);
+        const accruedBd = interestBreakdownFromNetAmount(accrued, p.rateBps);
+        interestAccruedKobo += accrued;
+        accruedGrossKobo += accruedBd.grossKobo;
+        accruedWhtKobo += accruedBd.whtKobo;
+
+        const cat =
+          p.kind === "EXPLORE"
+            ? p.product?.category?.name ?? "Explore"
+            : planType === "FLEX"
+              ? "Kipit Flex"
+              : "Kipit Lock";
+        const bucket = taxByCategory.get(cat) ?? {
+          principal: 0n,
+          accruedGross: 0n,
+          accruedWht: 0n,
+          accruedNet: 0n,
+        };
+        bucket.principal += p.principalKobo;
+        bucket.accruedGross += accruedBd.grossKobo;
+        bucket.accruedWht += accruedBd.whtKobo;
+        bucket.accruedNet += accruedBd.netKobo;
+        taxByCategory.set(cat, bucket);
+      }
+    }
+
+    // C7 — Call Account principal on tax breakdown (interest accrues separately on call balances).
+    const callKoboBal = call._sum.balanceKobo ?? 0n;
+    if (callKoboBal > 0n || !taxByCategory.has("Call Account")) {
+      const callBucket = taxByCategory.get("Call Account") ?? {
+        principal: 0n,
+        accruedGross: 0n,
+        accruedWht: 0n,
+        accruedNet: 0n,
+      };
+      callBucket.principal = callKoboBal;
+      taxByCategory.set("Call Account", callBucket);
+    }
+
+    const walletKobo = wallets._sum.balanceKobo ?? 0n;
+    const callKobo = callKoboBal;
+    const principalKobo = walletKobo + callKobo + fixedPrincipal + explorePrincipal;
+    const fumKobo = principalKobo + interestAccruedKobo;
+    const users = await prisma.user.count();
+    const pendingKyc = await prisma.kycProfile.count({ where: { status: "PENDING_REVIEW" } });
+    const pendingWithdrawals = await prisma.withdrawalRequest.count({
+      where: { status: "PROCESSING" },
+    });
+    const recentAudit = await prisma.auditEvent.findMany({
+      orderBy: { createdAt: "desc" },
+      take: 8,
+    });
+    const showAum = canViewAum(req.adminRole);
+
+    // Tracker VAM uses the same placementExpectedBreakdown path as client app/statement.
+    const valueAtMaturityKobo = BigInt(
+      Math.round((tracker.totals.valueAtMaturity ?? 0) * 100),
+    );
+
+    res.json({
+      data: {
+        fum: showAum ? koboToNaira(fumKobo) : null,
+        principal: showAum ? koboToNaira(principalKobo) : null,
+        canViewAum: showAum,
+        users,
+        pendingKyc,
+        pendingWithdrawals,
+        interestAccrued: showAum ? koboToNaira(interestAccruedKobo) : 0,
+        interestPayable: showAum ? tracker.interestPayable.total : 0,
+        recentAudit,
+        breakdown: showAum
+          ? {
+              wallet: koboToNaira(walletKobo),
+              call: koboToNaira(callKobo),
+              fixed: koboToNaira(fixedPrincipal),
+              explore: koboToNaira(explorePrincipal),
+              placements: koboToNaira(fixedPrincipal + explorePrincipal),
+              accrued: koboToNaira(interestAccruedKobo),
+              lock: koboToNaira(lockPrincipal),
+              flex: koboToNaira(flexPrincipal),
+              lockUpfront: koboToNaira(lockUpfrontPrincipal),
+              lockAtMaturity: koboToNaira(lockMaturityPrincipal),
+              valueAtMaturity: tracker.totals.valueAtMaturity,
+              byPlan: tracker.byPlan,
+              byPayout: tracker.byPayout,
+            }
+          : null,
+        tax: showAum
+          ? {
+              accruedGross: koboToNaira(accruedGrossKobo),
+              accruedWht: koboToNaira(accruedWhtKobo),
+              accruedNet: koboToNaira(interestAccruedKobo),
+              expectedGross: tracker.totals.interestGross,
+              expectedWht: tracker.totals.interestWht,
+              expectedNet: tracker.totals.interestNet,
+              byCategory: [...taxByCategory.entries()].map(([category, b]) => ({
+                category,
+                principal: koboToNaira(b.principal),
+                accruedGross: koboToNaira(b.accruedGross),
+                accruedWht: koboToNaira(b.accruedWht),
+                accruedNet: koboToNaira(b.accruedNet),
+              })),
+              byProduct: tracker.taxByProduct,
+            }
+          : null,
+        pendingFlexBreaks: tracker.pendingFlexBreaks.items.map((p) => ({
+          id: p.id,
+          userId: activePlacements.find((x) => x.id === p.id)?.userId ?? "",
+          user: p.client ?? "—",
+          email: activePlacements.find((x) => x.id === p.id)?.user?.email ?? null,
+          principal: p.principal,
+          creditNet: p.creditNet,
+          payout: p.payout,
+          breakRequestedAt: p.breakRequestedAt,
+          breakCreditAt: p.creditDueAt,
+          businessDaysLeft: p.businessDaysLeft,
+          overdue: p.overdue,
+        })),
+        maturityTracker: showAum ? tracker : null,
+        valueAtMaturityBook: showAum ? koboToNaira(valueAtMaturityKobo) : null,
+      },
+    });
+  }),
+);
+
 adminRouter.get(
   "/users",
   requireAdmin,

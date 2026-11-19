@@ -187,7 +187,9 @@ export async function maturePlacement(input: {
   }
 
   const tenorDays = placement.tenorDays ?? 0;
-  const interest = placementInterestKobo(placement);
+  // C7 / B10 — upfront Lock interest was paid on day one; maturity payout is principal only.
+  const interest =
+    placement.interestPayout === "UPFRONT" ? 0n : placementInterestKobo(placement);
   const payout = placement.principalKobo + interest;
   const early = Boolean(input.early);
   const now = new Date();
