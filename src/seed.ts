@@ -8,23 +8,11 @@ async function main() {
   const { ensureLockFlexRateBands } = await import("./services/lock-flex-rates.js");
   await ensureLockFlexRateBands();
 
-  // B17: four Explore categories only. Soft-retire old slugs by renaming + emptying products.
-  const categories = [
-    { slug: "treasury-bills", name: "Treasury Bills", sortOrder: 1 },
-    { slug: "commercial-papers", name: "Commercial Papers", sortOrder: 2 },
-    { slug: "mutual-funds", name: "Mutual Funds", sortOrder: 3 },
-    { slug: "bonds", name: "Bonds", sortOrder: 4 },
-  ];
+  // B17 / C9: four Explore categories; migrate Private & Structured Notes → Bonds.
+  const { ensureB17ExploreCategories } = await import("./services/explore-categories.js");
+  await ensureB17ExploreCategories();
 
-  for (const c of categories) {
-    await prisma.productCategory.upsert({
-      where: { slug: c.slug },
-      create: c,
-      update: { name: c.name, sortOrder: c.sortOrder },
-    });
-  }
-
-  // Remove / close legacy categories and wipe test offerings (B17).
+  // Soft-close leftover legacy category offerings (managed portfolio / commodities / etc.).
   for (const slug of ["structured-notes", "managed-portfolio", "commodities", "fixed-income"]) {
     const cat = await prisma.productCategory.findUnique({ where: { slug } });
     if (cat) {

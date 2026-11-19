@@ -74,6 +74,8 @@ exploreRouter.use(rejectIfMaintenance);
 exploreRouter.get(
   "/categories",
   asyncHandler(async (_req, res) => {
+    const { ensureB17ExploreCategories } = await import("../services/explore-categories.js");
+    await ensureB17ExploreCategories();
     const cats = await prisma.productCategory.findMany({
       where: { slug: { in: [...CANONICAL_CATEGORY_SLUGS] } },
       orderBy: { sortOrder: "asc" },

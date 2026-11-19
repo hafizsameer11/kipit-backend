@@ -679,7 +679,12 @@ adminResourcesRouter.get(
   "/products/categories",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    const rows = await prisma.productCategory.findMany({ orderBy: { sortOrder: "asc" } });
+    const { ensureB17ExploreCategories } = await import("../services/explore-categories.js");
+    await ensureB17ExploreCategories();
+    const rows = await prisma.productCategory.findMany({
+      where: { slug: { in: ["treasury-bills", "commercial-papers", "mutual-funds", "bonds"] } },
+      orderBy: { sortOrder: "asc" },
+    });
     res.json({
       data: rows.map((c) => ({ id: c.id, slug: c.slug, name: c.name })),
     });
@@ -690,6 +695,8 @@ adminResourcesRouter.get(
   "/products",
   requireAdmin,
   asyncHandler(async (_req, res) => {
+    const { ensureB17ExploreCategories } = await import("../services/explore-categories.js");
+    await ensureB17ExploreCategories();
     const rows = await prisma.product.findMany({
       include: { category: true },
       orderBy: { createdAt: "desc" },

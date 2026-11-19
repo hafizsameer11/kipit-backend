@@ -127,6 +127,7 @@ import {
   resolvePlanRate,
   ensureLockFlexRateBands,
 } from "../services/lock-flex-rates.js";
+import { ensureB17ExploreCategories } from "../services/explore-categories.js";
 import {
   formatRatePair,
   interestBreakdownFromNetAmount,
@@ -3251,7 +3252,11 @@ adminRouter.get(
   "/products/categories",
   requireAdmin,
   asyncHandler(async (_req, res) => {
-    const rows = await prisma.productCategory.findMany({ orderBy: { sortOrder: "asc" } });
+    await ensureB17ExploreCategories();
+    const rows = await prisma.productCategory.findMany({
+      where: { slug: { in: ["treasury-bills", "commercial-papers", "mutual-funds", "bonds"] } },
+      orderBy: { sortOrder: "asc" },
+    });
     res.json({ data: rows.map((c) => ({ id: c.id, slug: c.slug, name: c.name })) });
   }),
 );
@@ -3260,6 +3265,7 @@ adminRouter.get(
   "/products",
   requireAdmin,
   asyncHandler(async (req, res) => {
+    await ensureB17ExploreCategories();
     const includeArchived =
       req.query.includeArchived === "1" || req.query.includeArchived === "true";
     const rows = await prisma.product.findMany({
