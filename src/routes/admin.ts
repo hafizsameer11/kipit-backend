@@ -125,6 +125,7 @@ import {
   displayPlanName,
   PLAN_MIN_NAIRA,
   resolvePlanRate,
+  ensureLockFlexRateBands,
 } from "../services/lock-flex-rates.js";
 import {
   formatRatePair,
@@ -2718,10 +2719,14 @@ adminRouter.get(
   requireAdmin,
   asyncHandler(async (_req, res) => {
     const { ensureRatesApplied, rateBandAdminExtras } = await import("../services/rates.js");
+    // C10 — only Call + Lock/Flex standard Appendix D bands are managed here.
+    // Custom tenors (31–365) inherit nearest standard; they are not separate rows.
+    await ensureLockFlexRateBands();
     await ensureRatesApplied();
 
     const { formatRatePair } = await import("../services/wht.js");
     const bands = await prisma.rateBand.findMany({
+      where: { family: { in: ["CALL", "LOCK", "FLEX"] } },
       orderBy: [{ family: "asc" }, { standardTenorDays: "asc" }, { payout: "asc" }, { minDays: "asc" }],
     });
     const placements = await prisma.placement.findMany({
@@ -2810,6 +2815,9 @@ adminRouter.post(
     }
     const band = await prisma.rateBand.findUnique({ where: { id: body.bandId } });
     if (!band) throw new AppError(404, "Rate band not found", "BAND_NOT_FOUND");
+    if (band.family !== "CALL" && band.family !== "LOCK" && band.family !== "FLEX") {
+      throw new AppError(400, "Legacy rate bands are not managed under C10", "LEGACY_RATE_BAND");
+    }
     const row = await prisma.rateChangeRequest.create({
       data: {
         bandId: body.bandId,
