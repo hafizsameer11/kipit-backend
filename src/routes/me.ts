@@ -12,7 +12,7 @@ import {
   portfolioInterestThisWeek,
 } from "../lib/call-interest-week.js";
 import { accruedInterestToDateKobo, placementInterestKobo } from "../services/money.js";
-import { displayPlanName } from "../services/lock-flex-rates.js";
+import { customerPlanName } from "../services/lock-flex-rates.js";
 import { formatRatePair, interestBreakdownFromNetAmount } from "../services/wht.js";
 import { isProfileComplete } from "./settings.js";
 
@@ -64,7 +64,10 @@ meRouter.get(
 
     const holdingView = (p: (typeof placements)[number]) => {
       const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
-      const name = p.kind === "FIXED" ? displayPlanName(planType, p.tenorDays) : p.name;
+      const name =
+        p.kind === "FIXED"
+          ? customerPlanName(p.name, planType, p.tenorDays)
+          : p.name;
       const pair = formatRatePair(p.rateBps);
       const accrued = accruedInterestToDateKobo(p);
       const accruedBd = interestBreakdownFromNetAmount(accrued, p.rateBps);

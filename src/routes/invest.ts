@@ -31,6 +31,7 @@ import {
   type AutoInvestFrequency,
 } from "../lib/auto-invest.js";
 import {
+  customerPlanName,
   displayPlanName,
   listLockFlexRates,
   PLAN_MIN_NAIRA,
@@ -458,7 +459,9 @@ investRouter.get(
         const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
         const payout = p.interestPayout ?? "AT_MATURITY";
         const displayName =
-          p.kind === "FIXED" ? displayPlanName(planType, p.tenorDays) : p.name;
+          p.kind === "FIXED"
+            ? customerPlanName(p.name, planType, p.tenorDays)
+            : p.name;
         const pair = formatRatePair(p.rateBps);
         const expectedNet =
           p.interestOverrideKobo != null

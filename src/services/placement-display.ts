@@ -1,6 +1,6 @@
 import { koboToNaira } from "../lib/crypto.js";
 import { accruedInterestToDateKobo } from "./money.js";
-import { displayPlanName } from "./lock-flex-rates.js";
+import { customerPlanName } from "./lock-flex-rates.js";
 import {
   formatRatePair,
   interestBreakdownFromNetAmount,
@@ -49,7 +49,9 @@ export function serializePlacementHolding(p: PlacementDisplayInput, whtRatePct =
   const planType = p.planType ?? (p.kind === "FIXED" ? "LOCK" : null);
   const payout = p.interestPayout ?? "AT_MATURITY";
   const displayName =
-    p.kind === "FIXED" ? displayPlanName(planType, p.tenorDays) : p.name;
+    p.kind === "FIXED"
+      ? customerPlanName(p.name, planType, p.tenorDays)
+      : p.name;
   const pair = formatRatePair(p.rateBps, whtRatePct);
   const expectedNet = placementExpectedBreakdown(p, whtRatePct);
   const accruedNet = accruedInterestToDateKobo(p);

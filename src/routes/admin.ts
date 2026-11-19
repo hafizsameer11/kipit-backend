@@ -3248,8 +3248,11 @@ adminRouter.get(
 adminRouter.get(
   "/products",
   requireAdmin,
-  asyncHandler(async (_req, res) => {
+  asyncHandler(async (req, res) => {
+    const includeArchived =
+      req.query.includeArchived === "1" || req.query.includeArchived === "true";
     const rows = await prisma.product.findMany({
+      where: includeArchived ? undefined : { archivedAt: null },
       include: { category: true },
       orderBy: { createdAt: "desc" },
     });
@@ -3264,6 +3267,7 @@ adminRouter.get(
         tenorDays: p.tenorDays,
         minimum: koboToNaira(p.minimumKobo),
         availability: p.availability,
+        archivedAt: p.archivedAt,
         issuer: p.issuer,
         largeTicket: p.largeTicket,
         category: { id: p.categoryId, slug: p.category.slug, name: p.category.name },
@@ -3385,6 +3389,7 @@ adminRouter.patch(
         tenorDays: z.number().int().positive().optional(),
         minimum: z.number().positive().optional(),
         availability: z.enum(["OPEN", "CLOSING", "CLOSED", "COMING_SOON"]).optional(),
+        archivedAt: z.union([z.string().datetime(), z.null()]).optional(),
         issuer: z.string().optional(),
         largeTicket: z.boolean().optional(),
         details: productDetailsSchema,
@@ -3392,6 +3397,12 @@ adminRouter.patch(
       .parse(req.body);
     const rateBps =
       body.rateBps ?? (body.ratePct != null ? Math.round(body.ratePct * 10000) : undefined);
+    const archivedAt =
+      body.archivedAt === undefined
+        ? undefined
+        : body.archivedAt === null
+          ? null
+          : new Date(body.archivedAt);
     const row = await prisma.product.update({
       where: { id: String(req.params.id) },
       data: {
@@ -3404,6 +3415,7 @@ adminRouter.patch(
         minimumKobo:
           body.minimum !== undefined ? BigInt(Math.round(body.minimum * 100)) : undefined,
         availability: body.availability,
+        archivedAt,
         issuer: body.issuer,
         largeTicket: body.largeTicket,
       },
@@ -3411,7 +3423,7 @@ adminRouter.patch(
     });
     await writeAudit({
       actorAdminId: req.adminId,
-      action: "product.updated",
+      action: archivedAt ? "product.archived" : "product.updated",
       entityType: "Product",
       entityId: row.id,
     });
@@ -3423,6 +3435,7 @@ adminRouter.patch(
         tenorDays: row.tenorDays,
         minimum: koboToNaira(row.minimumKobo),
         availability: row.availability,
+        archivedAt: row.archivedAt,
         description: row.description,
         details: asProductDetails(row.details),
       },

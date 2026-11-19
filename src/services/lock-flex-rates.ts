@@ -56,6 +56,17 @@ export function displayPlanName(planType: "LOCK" | "FLEX" | null | undefined, te
   return days ? `${type}, ${days} days` : type;
 }
 
+/** Prefer the customer's chosen plan name; fall back to Lock/Flex + tenor. */
+export function customerPlanName(
+  storedName: string | null | undefined,
+  planType: "LOCK" | "FLEX" | null | undefined,
+  tenorDays: number | null | undefined,
+) {
+  const custom = storedName?.trim();
+  if (custom) return custom;
+  return displayPlanName(planType, tenorDays);
+}
+
 /** Nearest standard tenor at or below `days` (custom default rule). */
 export function nearestStandardAtOrBelow(days: number, standards: readonly number[]) {
   const sorted = [...standards].sort((a, b) => b - a);

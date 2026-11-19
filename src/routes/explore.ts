@@ -77,7 +77,19 @@ exploreRouter.get(
     const cats = await prisma.productCategory.findMany({
       where: { slug: { in: [...CANONICAL_CATEGORY_SLUGS] } },
       orderBy: { sortOrder: "asc" },
-      include: { _count: { select: { products: true } } },
+      include: {
+        _count: {
+          select: {
+            // Active Explore tiles: skip archived + closed (Closed lives under Past).
+            products: {
+              where: {
+                archivedAt: null,
+                availability: { in: ["OPEN", "CLOSING", "COMING_SOON"] },
+              },
+            },
+          },
+        },
+      },
     });
     const bySlug = new Map(cats.map((c) => [c.slug, c]));
     // Preserve B17 order even if DB sortOrder differs.
@@ -88,6 +100,7 @@ exploreRouter.get(
       data: ordered.map((c) => ({
         id: c.id,
         slug: c.slug,
+        // Always full category name (e.g. "Treasury Bills", not "T-bills").
         name: c.name,
         productCount: c._count.products,
       })),
@@ -106,6 +119,7 @@ exploreRouter.get(
         : undefined;
     const products = await prisma.product.findMany({
       where: {
+        archivedAt: null,
         category: {
           slug: slugOk ? slugOk : { in: [...CANONICAL_CATEGORY_SLUGS] },
         },
@@ -132,7 +146,10 @@ exploreRouter.get(
   asyncHandler(async (req, res) => {
     const key = String(req.params.idOrSlug);
     const product = await prisma.product.findFirst({
-      where: { OR: [{ id: key }, { slug: key }] },
+      where: {
+        archivedAt: null,
+        OR: [{ id: key }, { slug: key }],
+      },
       include: { category: true },
     });
     if (!product) throw new AppError(404, "Product not found", "PRODUCT_NOT_FOUND");
