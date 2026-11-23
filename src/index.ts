@@ -15,6 +15,18 @@ async function main() {
     console.warn("Redis unavailable at startup — continuing (OTP rate limits deferred)", err);
   }
 
+  // Best-effort catalogue seed so Lock/Flex invest and legal screens work on cold DBs.
+  try {
+    const { ensureLockFlexRateBands } = await import("./services/lock-flex-rates.js");
+    const { ensureLegalDocuments } = await import("./services/legal-documents.js");
+    const { ensureB17ExploreCategories } = await import("./services/explore-categories.js");
+    await ensureLockFlexRateBands();
+    await ensureLegalDocuments();
+    await ensureB17ExploreCategories();
+  } catch (err) {
+    console.warn("Catalogue ensure at startup failed — first request paths will retry", err);
+  }
+
   const app = createApp();
   app.listen(env.PORT, () => {
     console.log(`kipit-api listening on http://localhost:${env.PORT}`);

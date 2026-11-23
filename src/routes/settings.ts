@@ -1243,6 +1243,8 @@ settingsRouter.get(
   "/legal",
   requireAuth,
   asyncHandler(async (req: AuthRequest, res) => {
+    const { ensureLegalDocuments } = await import("../services/legal-documents.js");
+    await ensureLegalDocuments();
     const docs = await prisma.legalDocument.findMany({
       where: { published: true },
       orderBy: [{ docKey: "asc" }, { publishedAt: "desc" }],

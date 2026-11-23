@@ -24,26 +24,8 @@ async function main() {
   }
   await prisma.product.updateMany({ data: { availability: "CLOSED" } });
 
-  // B25 placeholders until ops uploads final PDFs.
-  const legalDefaults = [
-    { docKey: "terms", title: "Terms & Conditions", version: "2026.11" },
-    { docKey: "privacy", title: "Privacy Policy", version: "2026.11" },
-    { docKey: "risk_disclosure", title: "Risk Disclosure", version: "2026.11" },
-    { docKey: "product_terms_lock", title: "Product Terms — Kipit Lock", version: "2026.11" },
-    { docKey: "product_terms_flex", title: "Product Terms — Kipit Flex", version: "2026.11" },
-  ];
-  for (const d of legalDefaults) {
-    await prisma.legalDocument.upsert({
-      where: { docKey_version: { docKey: d.docKey, version: d.version } },
-      create: {
-        ...d,
-        published: true,
-        publishedAt: new Date(),
-        fileUrl: null,
-      },
-      update: { title: d.title, published: true, publishedAt: new Date() },
-    });
-  }
+  const { ensureLegalDocuments } = await import("./services/legal-documents.js");
+  await ensureLegalDocuments();
 
   await prisma.learnArticle.upsert({
     where: { slug: "tenor-and-yield" },

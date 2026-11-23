@@ -11,6 +11,8 @@ export async function runDueMaturities() {
   const due = await prisma.placement.findMany({
     where: {
       status: "ACTIVE",
+      // Break-pending Flex stays ACTIVE until credit day — must not also mature.
+      breakRequestedAt: null,
       maturityDate: { not: null, lte: now },
     },
     orderBy: { maturityDate: "asc" },

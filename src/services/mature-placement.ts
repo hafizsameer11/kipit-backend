@@ -185,6 +185,14 @@ export async function maturePlacement(input: {
   if (placement.status !== "ACTIVE") {
     throw new AppError(400, "Placement is not active", "NOT_ACTIVE");
   }
+  // Flex break stays ACTIVE until credit day; never pay full maturity in parallel.
+  if (placement.breakRequestedAt && !input.early) {
+    throw new AppError(
+      400,
+      "Flex break pending — wait for break credit",
+      "BREAK_PENDING",
+    );
+  }
 
   const tenorDays = placement.tenorDays ?? 0;
   // C7 / B10 — upfront Lock interest was paid on day one; maturity payout is principal only.

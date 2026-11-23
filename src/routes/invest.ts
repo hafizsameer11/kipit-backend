@@ -648,6 +648,9 @@ investRouter.post(
     if (placement.breakRequestedAt) {
       throw new AppError(400, "Break already requested", "BREAK_PENDING");
     }
+    if (placement.maturityDate && placement.maturityDate.getTime() <= Date.now()) {
+      throw new AppError(400, "Plan has matured", "ALREADY_MATURED");
+    }
     const anchor = placement.lastTopUpAt ?? placement.startDate;
     const daysSince = Math.floor((Date.now() - anchor.getTime()) / (24 * 60 * 60 * 1000));
     if (daysSince < FLEX_BREAK_MIN_DAYS) {
